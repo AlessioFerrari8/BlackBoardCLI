@@ -408,4 +408,74 @@ mod tests {
         assert_eq!(app.board.get(x, y), 0);
     }
 
+    #[test]
+    fn mouse_drag_draws_a_continuous_line() {
+        let mut app = connected(Role::Host);
+        app.board_rect = Rect::new(10, 5, WIDTH, HEIGHT);
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10, 5));
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 15, 5));
+        app.on_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 15, 5));
+        for x in 0..=5 {
+            assert_eq!(app.board.get(x, 0), 1);
+        }
+        let draws = app
+            .take_outbox()
+            .into_iter()
+            .filter(|m| matches!(m, Msg::Draw { .. }))
+            .count();
+        assert_eq!(draws, 2);
+        // A drag without a press must not draw.
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 20, 8));
+        assert_eq!(app.board.get(10, 3), 0);
+    }
+
+    #[test]
+    fn right_button_erases_and_outside_clicks_are_ignored() {
+        let mut app = connected(Role::Host);
+        app.board_rect = Rect::new(0, 0, 10, 10);
+        app.board.paint(2, &[[3, 3]]);
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 3, 3));
+        assert_eq!(app.board.get(3, 3), 0);
+        app.take_outbox();
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 3));
+        assert!(app.take_outbox().is_empty());
+    }
+
+    #[test]
+    fn clear_requires_shift_and_brush_is_bounded() {
+        let mut app = connected(Role::Host);
+        app.board.paint(1, &[[0, 0]]);
+        app.on_key(key(KeyCode::Char('c')));
+        assert!(!app.board.is_empty());
+        app.on_key(key(KeyCode::Char('C')));
+        assert!(app.board.is_empty());
+        assert!(app.take_outbox().contains(&Msg::Clear));
+        for _ in 0..10 {
+            app.on_key(key(KeyCode::Char('+')));
+        }
+        assert_eq!(app.brush, MAX_BRUSH);
+        for _ in 0..10 {
+            app.on_key(key(KeyCode::Char('-')));
+        }
+        assert_eq!(app.brush, 1);
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_anywhere() {
+        let mut app = App::new(Role::Host, "me");
+        app.focus = Focus::Chat;
+        let mut k = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        k.kind = KeyEventKind::Press;
+        app.on_key(k);
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn cursor_updates_are_deduplicated() {
+        let mut app = connected(Role::Host);
+        app.board_rect = Rect::new(0, 0, WIDTH, HEIGHT);
+        app.on_mouse(mouse(MouseEventKind::Moved, 4, 4));
+        app.on_mouse(mouse(MouseEventKind::Moved, 4, 4));
+        assert_eq!(app.take_outbox(), vec![Msg::Cursor { x: 4, y: 4 }]);
+    }
 }
