@@ -1,10 +1,12 @@
-//! Drawing the app with rataui
+//! Drawing the app with ratatui
 
-use clap::builder::styling::Style;
-use ratatui::{Frame, buffer::Buffer, layout::{Constraint, Layout, Rect}, style::{Color, Modifier}, symbols::border::EMPTY, text::{Line, Span}, widgets::{Block, BorderType, Widget}};
-
-use crate::{app::{App, Focus}, board::{HEIGHT, WIDTH}};
-
+use crate::{app::{App, Focus}, board::{EMPTY, HEIGHT, WIDTH}};
+use ratatui::Frame;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Widget};
 
 // Chalkboard green
 const SLATE: Color = Color::Rgb(28, 54, 40);
@@ -81,7 +83,7 @@ fn draw_board(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(block, area);
     if inner.width < WIDTH || inner.height < HEIGHT {
         let note = Line::styled(
-            " enlarge the terminal to see the whoel board ", 
+            " enlarge the terminal to see the whole board ", 
             Style::new().fg(Color::LightRed)
         );
         frame.render_widget(
@@ -110,32 +112,30 @@ impl Widget for BoardView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let app = self.app;
         for y in 0..area.height {
-            for x in 0..area.height {
-                for x in 0..area.width {
-                    let c = app.board.get(x, y);
-                    let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) else {
-                        continue;
-                    };
-                    if c == EMPTY {
-                        cell.set_symbol(" ").set_style(Style::new().bg(SLATE));
-                    } else {
-                        cell.set_symbol("█").set_style(Style::new().fg(color_of(c)).bg(SLATE));
-                    }
+            for x in 0..area.width {
+                let c = app.board.get(x, y);
+                let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) else {
+                    continue;
+                };
+                if c == EMPTY {
+                    cell.set_symbol(" ").set_style(Style::new().bg(SLATE));
+                } else {
+                    cell.set_symbol("█").set_style(Style::new().fg(color_of(c)).bg(SLATE));
                 }
             }
+        }
 
-            if let Some((x, y)) = app.peer_cursor && x < area.width && y < area.height && let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
-                cell.set_symbol("+").set_style(
-                    Style::new()
-                        .fg(Color::LightYellow)
-                        .bg(SLATE)
-                        .add_modifier(Modifier::BOLD)   
-                );
-            }
-            let (x, y) = app.cursor;
-            if app.focus == Focus::Board && x < area.width && y < area.height && let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
-                cell.set_style(Style::new().add_modifier(Modifier::REVERSED));
-            }
+        if let Some((x, y)) = app.peer_cursor && x < area.width && y < area.height && let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
+            cell.set_symbol("+").set_style(
+                Style::new()
+                    .fg(Color::LightYellow)
+                    .bg(SLATE)
+                    .add_modifier(Modifier::BOLD)
+            );
+        }
+        let (x, y) = app.cursor;
+        if app.focus == Focus::Board && x < area.width && y < area.height && let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
+            cell.set_style(Style::new().add_modifier(Modifier::REVERSED));
         }
     }
 }
