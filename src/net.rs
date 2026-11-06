@@ -1,5 +1,7 @@
 //! Client-side networking
 
+use crate::protocol::Msg;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetEvent {
     /// A message from the peer, or a pairing event (`PeerJoined`, `PeerLeft`, `Room`, `Error`) from the relay or from the 
