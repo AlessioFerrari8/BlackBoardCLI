@@ -111,7 +111,7 @@ pub fn read_line_capped(r: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -> 
         match found {
             Some(i) => {
                 r.consume(i + 1);
-                if buf.last() == Some(&b'\n') {
+                if buf.last() == Some(&b'\r') {
                     buf.pop();
                 }
                 return Ok(true);
