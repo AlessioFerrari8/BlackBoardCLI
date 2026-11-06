@@ -54,7 +54,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_board(frame, app, board_area);
     // draw_chat(frame, app, chat_area);
-    // draw_status(frame, app, status);    
+    draw_status(frame, app, status);    
 
 }
 
@@ -138,4 +138,33 @@ impl Widget for BoardView<'_> {
             }
         }
     }
+}
+
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let (dot, state) = if app.closed {
+        (Style::new().fg(Color::LightRed), "offline".to_string())
+    } else if app.connected {
+        (Style::new().fg(Color::LightGreen), format!("with {}", app.peer_label()))
+    } else {
+        (Style::new().fg(Color::Yellow), "waiting".to_string())
+    };
+    let swatch = if app.color == EMPTY {
+        Span::styled("░", Style::new().fg(Color::Gray))
+    } else {
+        Span::styled("██", Style::new().fg(color_of(app.color)))
+    };
+    let keys = match app.focus {
+        Focus::Board => {
+            "drag to draw · right drag erase · 1-8 color · 0 eraser · +/- brush · C clear · Tab chat · q quit"
+        }
+        Focus::Chat => "Enter send · Esc/Tab back to the board · Ctrl + C quit",
+    };
+    let line = Line::from(vec![
+        Span::styled(" ● ", dot),
+        Span::raw(format!("{state} ")),
+        swatch,
+        Span::raw(format!(" {} · brush {} ", color_name(app.color), app.brush)),
+        Span::styled(keys, Style::new().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(line, area);
 }
