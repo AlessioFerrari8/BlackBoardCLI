@@ -352,3 +352,60 @@ impl App {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEventKind;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn connected(role: Role) -> App {
+        let mut app = App::new(role, "me");
+        app.on_net(NetEvent::Msg(Msg::PeerJoined));
+        app.take_outbox();
+        app
+    }
+
+    #[test]
+    fn nothing_is_sent_while_alone() {
+        let mut app = App::new(Role::Host, "me");
+        app.on_key(key(KeyCode::Char(' ')));
+        app.on_key(key(KeyCode::Right));
+        assert!(app.take_outbox().is_empty());
+        assert!(!app.board.is_empty(), "drawing still works offline");
+    }
+
+    #[test]
+    fn keyboard_painting_and_colors() {
+        let mut app = connected(Role::Guest);
+        app.on_key(key(KeyCode::Char('4')));
+        app.on_key(key(KeyCode::Char(' ')));
+        let (x, y) = app.cursor;
+        assert_eq!(app.board.get(x, y), 4);
+        assert_eq!(
+            app.take_outbox(),
+            vec![Msg::Draw { 
+                color: 4, 
+                points: vec![[x, y]]
+            }]
+        );
+        app.on_key(key(KeyCode::Char('9')));
+        assert_eq!(app.color, 4, "9 is outside the palette");
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.board.get(x, y), 0);
+    }
+
+}
