@@ -198,4 +198,45 @@ mod tests {
         write_msg(&mut wire, &Msg::PeerJoined).unwrap();
         assert_eq!(wire, b"{\"t\":\"peer_joined\"}\n");
     }
+
+    #[test]
+    fn only_peer_messages_are_forwardable() {
+        assert!(Msg::Clear.is_peer_msg());
+        assert!(Msg::Chat { text: String::new() }.is_peer_msg());
+        assert!(!Msg::PeerLeft.is_peer_msg());
+        assert!(!Msg::Room { code: String::new() }.is_peer_msg());
+        assert!(!Msg::Create.is_peer_msg());
+    }
+
+    #[test]
+    fn rejects_overlong_lines() {
+        let mut r = Cursor::new(vec![b'a'; 100]);
+        let err = read_line_capped(&mut r, &mut Vec::new(), 10).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn handles_crlf_and_partial_eof() {
+        let mut r = Cursor::new(b"ab\r\ncd".to_vec());
+        let mut buf = Vec::new();
+        assert!(read_line_capped(&mut r, &mut buf, 10).unwrap());
+        assert_eq!(buf, b"ab");
+        let err = read_line_capped(&mut r, &mut buf, 10).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn rejects_garbage_and_unknown_tags() {
+        let mut buf = Vec::new();
+        assert!(read_msg(&mut Cursor::new(b"not json\n".to_vec()), &mut buf).is_err());
+        assert!(read_msg(&mut Cursor::new(b"{\"t\":\"nuke\"}\n".to_vec()), &mut buf).is_err());
+    }
+
+    #[test]
+    fn sanitize_drops_escapes_and_caps_length() {
+        assert_eq!(sanitize("hi\x1b[2Jthere", 50), "hi[2Jthere");
+        assert_eq!(sanitize("  a\tb\nc  ", 50), "a b c");
+        assert_eq!(sanitize("x\u{202E}y", 50), "xy");
+        assert_eq!(sanitize("àèìòù", 3), "àèì");
+    }
 }
