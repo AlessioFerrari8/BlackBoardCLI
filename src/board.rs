@@ -2,7 +2,7 @@
 
 // Board size in cells
 pub const WIDTH: u16 = 80;
-pub const HEIGHT: u16 = 80;
+pub const HEIGHT: u16 = 24;
 
 // Colour 0 is empty; 1..=PALETTE_LEN are the chalk colours
 pub const PALETTE_LEN: u8 = 8;
