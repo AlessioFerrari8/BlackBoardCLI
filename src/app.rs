@@ -478,4 +478,82 @@ mod tests {
         app.on_mouse(mouse(MouseEventKind::Moved, 4, 4));
         assert_eq!(app.take_outbox(), vec![Msg::Cursor { x: 4, y: 4 }]);
     }
+
+    #[test]
+    fn host_greets_and_sends_snapshot_on_join() {
+        let mut app = App::new(Role::Host, "ale");
+        app.board.paint(3, &[[1, 1]]);
+        app.on_net(NetEvent::Msg(Msg::PeerJoined));
+        let out = app.take_outbox();
+        assert_eq!(
+            out[0],
+            Msg::Hello {
+                name: "ale".into(),
+                proto: PROTO_VERSION
+            }
+        );
+        assert!(
+            matches!(&out[1], Msg::Snapshot { runs, .. } if Board::from_runs(WIDTH, HEIGHT, runs) == Some(app.board.clone()))
+        );
+    }
+
+    #[test]
+    fn guest_only_greets() {
+        let mut app = App::new(Role::Guest, "bob");
+        app.on_net(NetEvent::Msg(Msg::PeerJoined));
+        assert_eq!(app.take_outbox().len(), 1);
+    }
+
+    #[test]
+    fn chat_send_and_receive() {
+        let mut app = connected(Role::Guest);
+        app.on_key(key(KeyCode::Tab));
+        for c in "ciao!".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Char('q')));
+        assert!(!app.quit, "q types in chat");
+        app.on_key(key(KeyCode::Backspace));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.take_outbox(), vec![Msg::Chat { text: "ciao!".into() }]);
+        assert!(app.input.is_empty());
+
+        app.on_net(NetEvent::Msg(Msg::Chat {
+            text: "\x1b[31mhey".into(),
+        }));
+        assert_eq!(
+            app.chat.last(),
+            Some(&ChatLine {
+                who: Who::Peer,
+                text: "[31mhey".into()
+            })
+        );
+    }
+
+    #[test]
+    fn peer_messages_update_state() {
+        let mut app = connected(Role::Guest);
+        app.on_net(NetEvent::Msg(Msg::Hello {
+            name: "  Ann\n".into(),
+            proto: PROTO_VERSION,
+        }));
+        assert_eq!(app.peer_name.as_deref(), Some("Ann"));
+        app.on_net(NetEvent::Msg(Msg::Draw {
+            color: 2,
+            points: vec![[0, 0], [999, 999]],
+        }));
+        assert_eq!(app.board.get(0, 0), 2);
+        app.on_net(NetEvent::Msg(Msg::Cursor { x: 999, y: 1 }));
+        assert_eq!(app.peer_cursor, None);
+        app.on_net(NetEvent::Msg(Msg::Clear));
+        assert!(app.board.is_empty());
+        app.on_net(NetEvent::Msg(Msg::Snapshot {
+            w: 3,
+            h: 3,
+            runs: vec![[1, 9]],
+        }));
+        assert!(app.board.is_empty());
+        app.on_net(NetEvent::Msg(Msg::PeerLeft));
+        assert!(!app.connected && app.peer_name.is_none());
+    }
 }
