@@ -556,4 +556,29 @@ mod tests {
         app.on_net(NetEvent::Msg(Msg::PeerLeft));
         assert!(!app.connected && app.peer_name.is_none());
     }
+
+    #[test]
+    fn close_reasons_are_sanitized() {
+        // A peer picks part of this text: the decoder quotes unknown tags.
+        let mut app = connected(Role::Guest);
+        app.on_net(NetEvent::Closed(format!(
+            "connection lost: unknown variant `\x1b[2J\u{202E}{}`",
+            "x".repeat(60_000)
+        )));
+        let line = &app.chat.last().unwrap().text;
+        assert!(line.starts_with("disconnected: connection lost"));
+        assert!(!line.contains('\x1b') && !line.contains('\u{202E}'));
+        assert!(line.len() < 300);
+    }
+
+    #[test]
+    fn room_codes_from_the_relay_are_sanitized() {
+        let mut app = App::new(Role::Host, "me");
+        app.on_net(NetEvent::Msg(Msg::Room {
+            code: format!("AB\u{202E}\x1b[2J{}", "C".repeat(100)),
+        }));
+        let code = app.room.unwrap();
+        assert!(code.starts_with("AB[2J") && code.len() <= MAX_ROOM_CODE);
+        assert!(!app.chat.last().unwrap().text.contains('\u{202E}'));
+    }
 }
