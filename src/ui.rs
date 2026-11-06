@@ -1,12 +1,13 @@
 //! Drawing the app with ratatui
 
-use crate::{app::{App, Focus}, board::{EMPTY, HEIGHT, WIDTH}};
+use crate::{app::{App, Focus, Who}, board::{EMPTY, HEIGHT, WIDTH}};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Widget};
+use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 // Chalkboard green
 const SLATE: Color = Color::Rgb(28, 54, 40);
@@ -55,7 +56,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     };
 
     draw_board(frame, app, board_area);
-    // draw_chat(frame, app, chat_area);
+    draw_chat(frame, app, chat_area);
     draw_status(frame, app, status);    
 
 }
@@ -140,6 +141,89 @@ impl Widget for BoardView<'_> {
     }
 }
 
+fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
+    let peer = if app.connected  {
+        app.peer_label().to_string()
+    } else {
+        "nobody yet".into()
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(focus_style(app.focus == Focus::Chat))
+        .title(format!(" chat · {peer}"));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+    let [log_area, input_area] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+
+    // Wrap ourselves so we can keep the newest lines pinned to the bottom
+    let width = log_area.width as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for msg in &app.chat {
+        let (prefix, style) = match msg.who {
+            Who::Me => (format!("{}: ", app.name), Style::new().fg(Color:LightCyan)),
+            Who::Peer => (format!({}: ), app.peer_label()), Style::new().fg(Color::LightGreen),
+            Who::System => ("· ".to_string(), Style::new().fg(Color::DarkGray)),
+        };
+        for (i, row) in wrap(&format!("{prefix}{}", msg.text), width).into_iter().enumerate() {
+            if i == 0 && msg.who != Who::System {
+                let mut split = prefix.len().min(row.len());
+                while !row.is_char_boundary(split) {
+                    split -= 1;
+                }
+                let (head, tail) = row.split_at(split);
+                lines.push(Line::from(vec![
+                    Span::styled(head.to_string(), style.add_modifier(Modifier::BOLD)),
+                    Span::raw(tail.to_string()),
+                ]));
+            } else {
+                let s = if msg.who == Who::System { style } else { Style.new() };
+            }
+        }
+    }
+    let skip = lines.len().saturating_sub(log_area.height as usize);
+    let visible: Vec<Line> = lines.into_iter().skip(skip).collect();
+    frame.render_widget(Paragraph::new(visible), log_area);
+
+    // Input line, scrolled so the end of what you type stays visible
+    let prompt = "> ";
+    let room = (input_area.width as usize).saturating_sub(prompt.width() + 1);
+    let mut shown: Vec<char> = Vec::new();
+    let mut used = 0;
+
+    for c in app.input.chars().rev() {
+        let w = c.width().unwrap_or(0);
+        if used + w > room {
+            break;
+        }
+        used += w;
+        shown.push(c);
+    }
+    let shown: String = shown.into_iter().rev().collect();
+    let hint = app.input.is_empty() && app.focus != Focus::Chat;
+    let text = if hint { "Tab to chat".to_string() } else { shown };
+    let style = if hint {
+        Style::new().fg(Color::DarkGray)
+    } else {
+        Style::new()
+    };
+    frame.render_widget(
+        Line::from(vec![
+            Span::styled(prompt, Style::new().fg(Color::Yellow)),
+            Span::styled(text, style),
+        ]),
+        input_area,
+    );
+    if app.focus == Focus::Chat {
+        frame.set_cursor_position(Position::new(
+            input_area.x + (prompt.width() + used) as u16, 
+            input_area.y
+        ));
+    } 
+}
+
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let (dot, state) = if app.closed {
         (Style::new().fg(Color::LightRed), "offline".to_string())
@@ -167,4 +251,75 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(keys, Style::new().fg(Color::DarkGray)),
     ]);
     frame.render_widget(line, area);
+}
+
+/// Splits `text` into rows at most `width` columns wide, breaking at spaces when possible and mid-word otherwise
+pub fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut row_w = 0;
+    for word in text.split(' ') {
+        let word_w = word.width();
+        let sep = usize::from(!row.is_empty());
+        if row_w + sep + word_w <= width {
+            if sep == 1 {
+                row.push(' ');
+            }
+            row.push_str(word);
+            row_w += sep + word_w;
+            continue;
+        }
+        if !row.is_empty() {
+            rows.push(std::mem::take(& mut row));
+            row_w = 0;
+        }
+        for c in word.chars() {
+            let w = c.width().unwrap_or(0);
+            if row_w + w > width && !row.is_empty() {
+                rows.push(std::mem::take(&mut row));
+                row_w = 0;
+            }
+            row.push(c);
+            row_w += w;
+        }
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::Role;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn wrap_breaks_at_spaces_and_long_words() {
+        assert_eq!(wrap("hello world", 20), vec!["hello world"]);
+        assert_eq!(wrap("hello world", 7), vec!["hello", "world"]);
+        assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(wrap("", 4), vec![""]);
+        for row in wrap("一二三四五", 4) {
+            assert!(row.width() <= 4);
+        }
+    }
+
+    #[test]
+    fn renders_wide_and_narrow_and_maps_mouse() {
+        for (w, h) in [(120, 30), (82, 40), (40, 12)] {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            let mut app = App::new(Role::Host, "me");
+            app.board.paint(2, &[[0, 0]]);
+            app.system("hello there, this is a long system line that has to wrap somewhere");
+            term.draw(|f| draw(f, &mut app)).unwrap();
+            let r = app.board_rect;
+            assert!(r.width <= WIDTH && r.height <= HEIGHT);
+            assert_eq!(app.cell_at(r.x, r.y), Some((0, 0)));
+            assert_eq!(term.backend().buffer()[(r.x, r.y)].symbol(), "█")
+        }
+    }
 }
