@@ -1,14 +1,10 @@
 //! Client-side networking
 
 use std::{
-    io::BufReader,
-    net::{Shutdown, TcpStream},
-    sync::{
+    io::BufReader, net::{Shutdown, TcpListener, TcpStream}, sync::{
         Arc, Mutex,
         mpsc::{self, Receiver, SyncSender},
-    },
-    thread,
-    time::Duration,
+    }, thread, time::Duration,
 };
 
 use crate::protocol::{self, Msg};
@@ -40,6 +36,51 @@ pub struct Link {
 }
 
 impl Link {
+    /// Waits for guests on `listener`, one at a time. When a guest leaves the board stays open for the next one
+    pub fn host_direct(listener: TcpListener) -> Self {
+        let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE);
+        let writer: Slot = Arc::default();
+        let slot = Arc::clone(&writer);
+        // `busy` (not the writer slot) decides whether a guest is in: a failed send empties the slot while the reader may still be
+        // running. It is a mutex so `PeerLeft` and the release happen as one step: whoever reconnects on seeing `PeerLeft` finds 
+        // the board free, and the next `PeerJoined` can never overtake it. The UI never takes this lock, so holding it across a send to 
+        // the bounded queue cannot deadlock
+        let busy = Arc::new(Mutex::new(false));
+        thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(stream) = conn else { continue };
+                if *lock(&busy) {
+                    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+                    let _ = protocol::write_msg(
+                        &mut &stream, 
+                        &Msg::Error {
+                            reason: "someone is already drawing on this board".into(),
+                        },
+                    );
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
+                let Ok(reader) = prepare(&stream) else { continue };
+                *lock(&busy) = true;
+                *lock(&slot) = Some(stream);
+                if tx.send(NetEvent::Msg(Msg::PeerJoined)).is_err() {
+                    return;
+                }
+                let (tx, slot, busy) = (tx.clone(), Arc::clone(&slot), Arc::clone(&busy));
+                thread::spawn(move || {
+                    pump(reader, &tx, false);
+                    if let Some(s) = lock(&slot).take() {
+                        let _ = s.shutdown(Shutdown::Both);
+                    }
+                    let mut busy = lock(&busy);
+                    let _ = tx.send(NetEvent::Msg(Msg::PeerLeft));
+                    *busy = false;
+                });
+            }
+        });
+        Self { writer, rx }
+    }
+
     /// Connects straight to a host started with `blackboard host`
     pub fn join_direct(addr: &str) -> Result<Self> {
         Ok(Self::spawn(connect(addr)?, false))
