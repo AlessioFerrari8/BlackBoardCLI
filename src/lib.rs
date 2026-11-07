@@ -5,3 +5,4 @@ pub mod board;
 pub mod net;
 pub mod protocol;
 pub mod ui;
+pub mod relay;
