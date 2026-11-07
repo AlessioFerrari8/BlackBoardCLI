@@ -163,8 +163,8 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     for msg in &app.chat {
         let (prefix, style) = match msg.who {
-            Who::Me => (format!("{}: ", app.name), Style::new().fg(Color:LightCyan)),
-            Who::Peer => (format!({}: ), app.peer_label()), Style::new().fg(Color::LightGreen),
+            Who::Me => (format!("{}: ", app.name), Style::new().fg(Color::LightCyan)),
+            Who::Peer => (format!("{}: ", app.peer_label()), Style::new().fg(Color::LightGreen)),
             Who::System => ("· ".to_string(), Style::new().fg(Color::DarkGray)),
         };
         for (i, row) in wrap(&format!("{prefix}{}", msg.text), width).into_iter().enumerate() {
@@ -179,7 +179,7 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(tail.to_string()),
                 ]));
             } else {
-                let s = if msg.who == Who::System { style } else { Style.new() };
+                let s = if msg.who == Who::System { style } else { Style::new() };
             }
         }
     }
