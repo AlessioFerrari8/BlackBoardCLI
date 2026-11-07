@@ -86,6 +86,26 @@ impl Link {
         Ok(Self::spawn(connect(addr)?, false))
     }
 
+    /// Opens a new room on the relay; its code arrives as `Msg::Room`
+    pub fn relay_host(relay: &str) -> Result<Self> {
+        let stream = connect(relay)?;
+        protocol::write_msg(&mut &stream, &Msg::Create).context("talking to the relay")?;
+        Ok(Self::spawn(stream, true))
+    }
+
+    /// Joins the room `code` on the relay
+    pub fn relay_join(relay: &str, code: &str) -> Result<Self> {
+        let stream = connect(relay)?;
+        protocol::write_msg(
+            &mut &stream, 
+            &Msg::Join { 
+                code: code.trim().to_ascii_uppercase(),
+            },
+        )
+        .context("talking to the relay")?;
+        Ok(Self::spawn(stream, true))
+    }
+
     /// Runs a reader thread over an already connected stream. `via_relay` decides who produces `PeerJoined`: the relay
     /// or us right now
     fn spawn(stream: TcpStream, via_relay: bool) -> Self {

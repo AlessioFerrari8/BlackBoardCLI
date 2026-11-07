@@ -1,8 +1,8 @@
-use std::{io::stdout, net::{IpAddr, TcpListener, UdpSocket}, time::Duration};
+use std::{fmt::format, io::stdout, net::{IpAddr, TcpListener, UdpSocket}, time::Duration};
 
 use anyhow::{Context, Result};
 use blackboard::{
-    app::{App, Role}, net::Link, ui,
+    app::{App, Role}, net::Link, relay::{self, RelayConfig}, ui,
 };
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
@@ -10,6 +10,7 @@ use crossterm::{
 };
 
 const DEFAULT_PORT: u16 = 7878;
+const DEFAULT_RELAY_PORT: u16 = 7879;
 /// Most network events handled per frame, so a flooding peer cannot keep the loop away from the keyboard
 const MAX_EVENTS_PER_FRAME: usize = 1024;
 
@@ -36,10 +37,20 @@ enum Command {
     },
     /// Join a friend's board
     Join {
-        /// The host's address (like 192.168.1.19 or 192.168.1.19:7878)
+        /// The host's address (like 192.168.1.19 or 192.168.1.19:7878), or a room code when --relay is set
         target: String,
         #[command(flatten)]
         common: Common,
+    },
+    /// Run a relay so two people can meet by room code from any network
+    Relay {
+        #[arg(long, short, default_value_t = DEFAULT_RELAY_PORT)]
+        port: u16,
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: IpAddr,
+        /// Most rooms waiting for a guest at the same time
+        #[arg(long, default_value_t = 1000)]
+        max_rooms: usize,
     },
 }
 
@@ -48,27 +59,60 @@ struct Common {
     /// Name shown to your friend
     #[arg(long, short)]
     name: Option<String>,
+    /// Meet through this relay (host:port) instead of connecting directly
+    #[arg(long, short, env = "BLACKBOARD_RELAY")]
+    relay: Option<String>,
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Relay { 
+            port, 
+            bind, 
+            max_rooms 
+        } => {
+            let listener = TcpListener::bind((bind, port)).with_context(|| 
+                format!("cannot listen on {bind}:{port}"))?;
+            let cfg = RelayConfig {
+                max_rooms,
+                ..RelayConfig::default()
+            };
+            relay::serve(listener, cfg)?;
+            Ok(())
+        }
         Command::Host { port, bind, common } => {
             let mut app = App::new(Role::Host, &name_or_default(common.name));
-            let listener = TcpListener::bind((bind, port)).with_context(||
-            format!("cannot listen on {bind}:{port}"))?;
-            let ip = lan_ip().map_or_else(|| "<your_ip>".to_string(), |ip| ip.to_string());
-            let target = if port == DEFAULT_PORT {
-                ip
-            } else {
-                format!("{ip}:{port}")
+
+            let link = match &common.relay {
+                Some(relay) => {
+                    let relay = with_port(relay, DEFAULT_RELAY_PORT);
+                    app.join_cmd = format!("blackboard join --relay {relay}");
+                    app.system(format!("asking {relay} for a room..."));
+                    Link::relay_host(&relay)?
+                }
+                None => {
+                    let listener = TcpListener::bind((bind, port)).with_context(|| 
+                        format!("cannot listen on {bind}:{port}"))?;
+                        let ip = lan_ip().map_or_else(|| "<your-ip>".to_string(), |ip| ip.to_string());
+                        let target = if port == DEFAULT_PORT {
+                            ip
+                        } else {
+                            format!("{ip}:{port}")
+                        };
+                        app.system(format!(
+                            "waiting on port {port}, your friend runs: blackboard join {target}"
+                        ));
+                        Link::host_direct(listener)
+                }
             };
-            app.system(format!("waiting on port {port}, your friend runs: blackboard join {target}"));
-            let link = Link::host_direct(listener);
             run(app, link)
         }
         Command::Join { target, common } => {
             let app = App::new(Role::Guest, &name_or_default(common.name));
-            let link = Link::join_direct(&with_port(&target, DEFAULT_PORT))?;
+            let link = match &common.relay {
+                Some(relay) => Link::relay_join(&with_port(relay, DEFAULT_RELAY_PORT), &target)?,
+                None => Link::join_direct(&with_port(&target, DEFAULT_PORT))?,
+            };
             run(app, link)
         }
     }
