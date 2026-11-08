@@ -1,11 +1,18 @@
 //! e2e tests over real loopback sockets
 
 use core::panic;
-use std::{io::{ErrorKind, Write}, net::{TcpListener, TcpStream}, thread, time::{Duration, Instant}};
+use std::{io::{BufReader, ErrorKind, Write}, net::{TcpListener, TcpStream}, thread, time::{Duration, Instant}};
 
-use blackboard::{app::{App, Role}, net::{Link, NetEvent}, protocol::Msg};
+use blackboard::{app::{App, Role}, net::{Link, NetEvent}, protocol::{self, Msg}, relay::{self, RelayConfig}};
 
 const WAIT: Duration = Duration::from_secs(3);
+
+fn start_relay(cfg: RelayConfig) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    thread::spawn(move || relay::serve(listener, cfg));
+    addr
+}
 
 /// Next message event, skipping nothing; panics on timeout
 fn next(link: &Link) -> NetEvent {
@@ -16,6 +23,13 @@ fn expect_msg(link: &Link) -> Msg {
     match next(link) {
         NetEvent::Msg(m) => m,
         other => panic!("expected a message, got {other:?}"),
+    }
+}
+
+fn room_code(link: &Link) -> String {
+    match expect_msg(link) {
+        Msg::Room { code } => code,
+        other => panic!("expected a room, got {other:?}"),
     }
 }
 
@@ -86,4 +100,63 @@ fn direct_mode_pushes_back_on_a_flooding_guest() {
         }
     }
     drop(host);
+}
+
+#[test]
+fn relay_pairs_and_forwards_both_ways() {
+    let relay = start_relay(RelayConfig::default());
+    let host = Link::relay_host(&relay).unwrap();
+    let code = room_code(&host);
+    let guest = Link::relay_join(&relay, &code.to_lowercase()).unwrap();
+
+    assert_eq!(expect_msg(&host), Msg::PeerJoined);
+    assert_eq!(expect_msg(&guest), Msg::PeerJoined);
+
+    assert!(host.send(&Msg::Chat { text: "hi".into() }));
+    assert_eq!(expect_msg(&guest), Msg::Chat { text: "hi".into() });
+    assert!(guest.send(&Msg::Draw { 
+        color: 2, 
+        points: vec![[1, 1]]
+    }));
+    assert_eq!(
+        expect_msg(&host),
+        Msg::Draw { 
+            color: 2, 
+            points: vec![[1, 1]]
+        }
+    );
+
+    // Control messages from a peer never reach the other side
+    assert!(guest.send(&Msg::PeerLeft));
+    assert!(guest.send(&Msg::Clear));
+    assert_eq!(expect_msg(&host), Msg::Clear);
+
+    drop(guest);
+    assert_eq!(expect_msg(&host), Msg::PeerLeft);
+    assert!(matches!(next(&host), NetEvent::Closed(_)));
+}
+
+#[test]
+fn relay_rejects_unknown_codes_and_codes_are_single_use() {
+    let relay = start_relay(RelayConfig::default());
+    let guest = Link::relay_join(&relay, "ZZZZZZ").unwrap();
+    assert!(matches!(expect_msg(&guest), Msg::Error { .. }));
+    assert!(matches!(next(&guest), NetEvent::Closed(_)));
+
+    let host = Link::relay_host(&relay).unwrap();
+    let code = room_code(&host);
+    let first = Link::relay_join(&relay, &code).unwrap();
+    assert_eq!(expect_msg(&first), Msg::PeerJoined);
+    let second = Link::relay_join(&relay, &code).unwrap();
+    assert!(matches!(expect_msg(&second), Msg::Error { .. }));
+}
+
+#[test]
+fn relay_refuses_bad_handshakes() {
+    let relay = start_relay(RelayConfig::default());
+    let stream = TcpStream::connect(&relay).unwrap();
+    protocol::write_msg(&mut &stream, &Msg::Chat { text: "hi".into() }).unwrap();
+    let mut reader = BufReader::new(&stream);
+    let reply = protocol::read_msg(&mut reader, &mut Vec::new()).unwrap();
+    assert!(matches!(reply, Some(Msg::Error { .. })));
 }
