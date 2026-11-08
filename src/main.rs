@@ -1,5 +1,4 @@
 use std::{
-    fmt::format,
     io::stdout,
     net::{IpAddr, TcpListener, UdpSocket},
     time::Duration,
@@ -16,6 +15,8 @@ use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
 };
+
+use clap::{Args, Parser, Subcommand};
 
 const DEFAULT_PORT: u16 = 7878;
 const DEFAULT_RELAY_PORT: u16 = 7879;
