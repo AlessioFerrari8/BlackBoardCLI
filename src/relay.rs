@@ -4,7 +4,7 @@
 //! `PeerJoined` and from that point every peer message one sends is passed to the other. When either side leaves
 //! the other gets `PeerLeft` and both connections are closed
 
-use std::{collections::HashMap, io::{self, BufRead, BufReader, BufWriter}, net::{Shutdown, TcpListener, TcpStream}, sync::{Arc, Mutex}, thread, time::Duration};
+use std::{collections::HashMap, io::{self, BufRead, BufReader, BufWriter}, net::{Shutdown, TcpListener, TcpStream}, sync::{Arc, Mutex}, thread, time::{Duration, Instant}};
 
 use crate::protocol::{self, Msg};
 
@@ -16,6 +16,8 @@ pub struct RelayConfig {
     pub max_rooms: usize,
     // Time a client has 
     pub handshake_timeout: Duration,
+    // Time a room may wait for its guest
+    pub room_ttl: Duration,
 }
 
 impl Default for RelayConfig {
@@ -23,12 +25,14 @@ impl Default for RelayConfig {
         Self {
             max_rooms: 1000,
             handshake_timeout: Duration::from_secs(10),
+            room_ttl: Duration::from_secs(15 * 60),
         }
     }
 }
 
 struct Waiting {
     host: TcpStream,
+    since: Instant,
 }
 
 struct State {
@@ -43,6 +47,14 @@ pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
         rooms: Mutex::new(HashMap::new()),
     });
     eprintln!("realy listening on {}", listener.local_addr()?);
+
+    let janitor = Arc::clone(&state);
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(5));
+            expire_rooms(&janitor);
+        }
+    });
 
     for conn in listener.incoming() {
         let stream = match conn {
@@ -93,16 +105,19 @@ fn handle(stream: TcpStream, state: &Arc<State>) -> io::Result<()> {
                         break c;
                     }
                 };
+                stream.set_read_timeout(Some(Duration::from_millis(500)))?;
                 rooms.insert(
                     code.clone(),
                     Waiting {
                         host: stream.try_clone()?,
+                        since: Instant::now(),
                     },
                 );
                 code
             };
             protocol::write_msg(&mut &stream, &Msg::Room { code: code.clone() })?;
             eprintln!("room {code} created");
+            wait_until_closed(&stream, state, &code);
             Ok(())
         }
         Some(Msg::Join { code }) => {
@@ -125,7 +140,32 @@ fn handle(stream: TcpStream, state: &Arc<State>) -> io::Result<()> {
     }
 }
 
+/// Parks the host's handler thrad while its room is open, so the room disappears if the host hangs up before a guest arrives.
+/// The socket's read timeout must already be short (see `handle`): it is set before the room is published so it can never overwrite
+/// the `None` that `pair` sets
+fn wait_until_closed(stream: &TcpStream, state: &State, code: &str) {
+    let mut probe = [0u8; 1];
+    while lock(&state.rooms).contains_key(code) {
+        match stream.peek(&mut probe) {
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => continue,
+            Ok(0) | Err(_) => {
+                if lock(&state.rooms).remove(code).is_some() {
+                    eprintln!("room {code} abandoned");
+                }
+            }
+            Ok(_) => {
+                // Data before pairing breaks protocol; after pairing it is the pipe's business and the room is already gone
+                if let Some(w) = lock(&state.rooms).remove(code) {
+                    refuse(w.host, "send nothing before your guest joins");
+                }
+            }
+        }
+        return;
+    }
+}
+
 fn pair(host: TcpStream, guest: TcpStream) -> io::Result<()> {
+    host.set_read_timeout(None)?;
     for s in [&host, &guest] {
         protocol::write_msg(&mut &*s, &Msg::PeerJoined)?;
     }
@@ -153,6 +193,27 @@ fn pipe(src: TcpStream, dst: TcpStream) {
     let _ = protocol::write_msg(&mut writer, &Msg::PeerLeft);
     let _ = src.shutdown(Shutdown::Both);
     let _ = dst.shutdown(Shutdown::Both);
+}
+
+fn expire_rooms(state: &State) {
+    let ttl = state.cfg.room_ttl;
+    let expired: Vec<(String, Waiting)> = {
+        let mut rooms = lock(&state.rooms);
+        let codes: Vec<String> = rooms
+            .iter()
+            .filter(|(_, w)| w.since.elapsed() > ttl)
+            .map(|(c, _)| c.clone())
+            .collect();
+        codes
+            .into_iter()
+            .filter_map(|c| rooms.remove(&c).map(|w| (c, w)))
+            .collect()
+    };
+    for (code, w) in expired {
+        eprintln!("room {code} expired");
+        refuse(w.host, "nobody joined in time, room closed")
+    }
+
 }
 
 fn refuse(stream: TcpStream, reason: &str) {
