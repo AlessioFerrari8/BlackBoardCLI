@@ -6,7 +6,7 @@
 
 use std::{
     collections::HashMap,
-    io::{self, BufRead, BufReader, BufWriter},
+    io::{self, BufReader, BufWriter},
     net::{IpAddr, Shutdown, TcpListener, TcpStream},
     sync::{Arc, Mutex},
     thread,
