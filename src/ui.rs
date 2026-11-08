@@ -190,7 +190,7 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(tail.to_string()),
                 ]));
             } else {
-                let s = if msg.who == Who::System { style } else { Style::new() };
+                // let s = if msg.who == Who::System { style } else { Style::new() };
             }
         }
     }
