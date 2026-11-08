@@ -1,9 +1,19 @@
 //! e2e tests over real loopback sockets
 
 use core::panic;
-use std::{io::{BufReader, ErrorKind, Write}, net::{TcpListener, TcpStream}, thread, time::{Duration, Instant}};
+use std::{
+    io::{BufReader, ErrorKind, Write},
+    net::{TcpListener, TcpStream},
+    thread,
+    time::{Duration, Instant},
+};
 
-use blackboard::{app::{App, Role}, net::{Link, NetEvent}, protocol::{self, Msg}, relay::{self, RelayConfig}};
+use blackboard::{
+    app::{App, Role},
+    net::{Link, NetEvent},
+    protocol::{self, Msg},
+    relay::{self, RelayConfig},
+};
 
 const WAIT: Duration = Duration::from_secs(3);
 
@@ -96,7 +106,7 @@ fn direct_mode_pushes_back_on_a_flooding_guest() {
         match flood.write_all(&batch) {
             Ok(()) => assert!(start.elapsed() < Duration::from_secs(5), "host keeps buffering"),
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => break,
-            Err(e) => panic!("unexpected write error: {e}")
+            Err(e) => panic!("unexpected write error: {e}"),
         }
     }
     drop(host);
@@ -114,14 +124,14 @@ fn relay_pairs_and_forwards_both_ways() {
 
     assert!(host.send(&Msg::Chat { text: "hi".into() }));
     assert_eq!(expect_msg(&guest), Msg::Chat { text: "hi".into() });
-    assert!(guest.send(&Msg::Draw { 
-        color: 2, 
+    assert!(guest.send(&Msg::Draw {
+        color: 2,
         points: vec![[1, 1]]
     }));
     assert_eq!(
         expect_msg(&host),
-        Msg::Draw { 
-            color: 2, 
+        Msg::Draw {
+            color: 2,
             points: vec![[1, 1]]
         }
     );

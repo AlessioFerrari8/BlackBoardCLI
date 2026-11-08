@@ -1,10 +1,14 @@
 //! Client-side networking
 
 use std::{
-    io::BufReader, net::{Shutdown, TcpListener, TcpStream}, sync::{
+    io::BufReader,
+    net::{Shutdown, TcpListener, TcpStream},
+    sync::{
         Arc, Mutex,
         mpsc::{self, Receiver, SyncSender},
-    }, thread, time::Duration,
+    },
+    thread,
+    time::Duration,
 };
 
 use crate::protocol::{self, Msg};
@@ -42,8 +46,8 @@ impl Link {
         let writer: Slot = Arc::default();
         let slot = Arc::clone(&writer);
         // `busy` (not the writer slot) decides whether a guest is in: a failed send empties the slot while the reader may still be
-        // running. It is a mutex so `PeerLeft` and the release happen as one step: whoever reconnects on seeing `PeerLeft` finds 
-        // the board free, and the next `PeerJoined` can never overtake it. The UI never takes this lock, so holding it across a send to 
+        // running. It is a mutex so `PeerLeft` and the release happen as one step: whoever reconnects on seeing `PeerLeft` finds
+        // the board free, and the next `PeerJoined` can never overtake it. The UI never takes this lock, so holding it across a send to
         // the bounded queue cannot deadlock
         let busy = Arc::new(Mutex::new(false));
         thread::spawn(move || {
@@ -52,7 +56,7 @@ impl Link {
                 if *lock(&busy) {
                     let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
                     let _ = protocol::write_msg(
-                        &mut &stream, 
+                        &mut &stream,
                         &Msg::Error {
                             reason: "someone is already drawing on this board".into(),
                         },
@@ -97,8 +101,8 @@ impl Link {
     pub fn relay_join(relay: &str, code: &str) -> Result<Self> {
         let stream = connect(relay)?;
         protocol::write_msg(
-            &mut &stream, 
-            &Msg::Join { 
+            &mut &stream,
+            &Msg::Join {
                 code: code.trim().to_ascii_uppercase(),
             },
         )
