@@ -98,7 +98,7 @@ pub fn line(a: (u16, u16), b: (u16, u16)) -> Vec<(u16, u16)> {
     let (mut x0, mut y0) = (a.0 as i32, a.1 as i32);
     let (x1, y1) = (b.0 as i32, b.1 as i32);
     let dx = (x1 - x0).abs();
-    let dy = -(y1- y0).abs();
+    let dy = -(y1 - y0).abs();
     let sx = if x0 < x1 { 1 } else { -1 };
     let sy = if y0 < y1 { 1 } else { -1 };
     let mut err = dx + dy;
@@ -112,14 +112,13 @@ pub fn line(a: (u16, u16), b: (u16, u16)) -> Vec<(u16, u16)> {
         if e2 >= dy {
             err += dy;
             x0 += sx;
-        }        
+        }
         if e2 <= dx {
             err += dx;
             y0 += sy;
         }
     }
 }
-
 
 /// Expands each center into a `size`x`size` square brush, clipped to the board and without duplicates
 pub fn brush(centres: &[(u16, u16)], size: u16) -> Vec<[u16; 2]> {
@@ -192,7 +191,7 @@ mod tests {
         assert_eq!(l.last(), Some(&(5, 2)));
         for w in l.windows(2) {
             assert!(w[0].0.abs_diff(w[1].0) <= 1 && w[0].1.abs_diff(w[1].1) <= 1);
-        }        
+        }
         assert_eq!(line((5, 2), (0, 0)).len(), l.len());
         assert_eq!(line((3, 3), (3, 3)), vec![(3, 3)]);
     }
@@ -204,6 +203,4 @@ mod tests {
         assert_eq!(brush(&[(0, 0)], 3).len(), 4);
         assert_eq!(brush(&[(5, 5), (5, 5)], 2).len(), 4);
     }
-
-
 }

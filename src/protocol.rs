@@ -1,5 +1,5 @@
 //! Wire protocol: one JSON object per line over TCP.
-//! 
+//!
 //! The same enum carries p2p messages (drawing, chat, ...) and the relay controls messages (room codes, pairing). The relay
 //! only forwards the variants for which [`Msg::is_peer_msg`] is true, so a peer can never fake a control message
 
@@ -21,45 +21,24 @@ pub const MAX_CHAT: usize = 280;
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Msg {
     // p2p
-    Hello {
-        name: String,
-        proto: u32,
-    },
+    Hello { name: String, proto: u32 },
     // Paint `points` with `color`; color 0 erases
-    Draw {
-        color: u8,
-        points: Vec<[u16; 2]>,
-    },
+    Draw { color: u8, points: Vec<[u16; 2]> },
     Clear,
-    Chat {
-        text: String,
-    },
-    Cursor {
-        x: u16,
-        y: u16,
-    },
+    Chat { text: String },
+    Cursor { x: u16, y: u16 },
     // Whole board, run-length encoded as `[color, run]` pairs in row-major order
-    Snapshot {
-        w: u16,
-        h: u16,
-        runs: Vec<[u16; 2]>,
-    },
+    Snapshot { w: u16, h: u16, runs: Vec<[u16; 2]> },
 
     // Client to relay
     Create,
-    Join {
-        code: String,
-    },
+    Join { code: String },
 
     // Relay to client (also synthesised locally in direct mode)
-    Room {
-        code: String,
-    },
+    Room { code: String },
     PeerJoined,
     PeerLeft,
-    Error {
-        reason: String,
-    },
+    Error { reason: String },
 }
 
 impl Msg {
@@ -85,7 +64,7 @@ pub fn write_msg(w: &mut impl Write, msg: &Msg) -> io::Result<()> {
     w.flush()
 }
 
-/// Reads one line into `buf` (without the trailing newline), refusing lines longer than `max` bytes so a peer cannot make 
+/// Reads one line into `buf` (without the trailing newline), refusing lines longer than `max` bytes so a peer cannot make
 /// us buffer without limit. Returns `Ok(false)` on a clean EOF
 pub fn read_line_capped(r: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -> io::Result<bool> {
     buf.clear();
@@ -157,21 +136,21 @@ mod tests {
     #[test]
     fn roundtrip_every_variant() {
         let msgs = vec![
-            Msg::Hello { 
-                name: "ale".into(), 
-                proto: PROTO_VERSION, 
+            Msg::Hello {
+                name: "ale".into(),
+                proto: PROTO_VERSION,
             },
-            Msg::Draw { 
-                color: 3, 
-                points: vec![[1, 2], [3, 4]], 
+            Msg::Draw {
+                color: 3,
+                points: vec![[1, 2], [3, 4]],
             },
             Msg::Clear,
             Msg::Chat { text: "ciao".into() },
             Msg::Cursor { x: 5, y: 6 },
-            Msg::Snapshot { 
-                w: 2, 
-                h: 1, 
-                runs: vec![[0, 2]], 
+            Msg::Snapshot {
+                w: 2,
+                h: 1,
+                runs: vec![[0, 2]],
             },
             Msg::Create,
             Msg::Join { code: "ABC234".into() },

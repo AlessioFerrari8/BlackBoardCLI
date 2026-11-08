@@ -4,8 +4,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use crate::{board::{self, Board, HEIGHT, PALETTE_LEN, WIDTH}, net::NetEvent, protocol::{MAX_CHAT, MAX_NAME, MAX_POINTS, Msg, PROTO_VERSION, sanitize}};
-
+use crate::{
+    board::{self, Board, HEIGHT, PALETTE_LEN, WIDTH},
+    net::NetEvent,
+    protocol::{MAX_CHAT, MAX_NAME, MAX_POINTS, Msg, PROTO_VERSION, sanitize},
+};
 
 pub const MAX_BRUSH: u16 = 5;
 const CHAT_HISTORY: usize = 500;
@@ -27,7 +30,7 @@ pub enum Focus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Who {
-    Me, 
+    Me,
     Peer,
     System,
 }
@@ -245,12 +248,12 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_cursor(x, (y + 1).min(HEIGHT - 1)),
             KeyCode::Char(' ') => self.stroke(self.color, &[self.cursor]),
             KeyCode::Char('x') => self.stroke(board::EMPTY, &[self.cursor]),
-            KeyCode::Char(d @ '0' ..='9') => {
+            KeyCode::Char(d @ '0'..='9') => {
                 let n = d as u8 - b'0';
                 if n <= PALETTE_LEN {
                     self.color = n;
                 }
-            }            
+            }
             KeyCode::Char('e') => self.color = board::EMPTY,
             KeyCode::Char('+') | KeyCode::Char('=') => self.brush = (self.brush + 1).min(MAX_BRUSH),
             KeyCode::Char('-') => self.brush = self.brush.saturating_sub(1).max(1),
@@ -313,7 +316,7 @@ impl App {
         if col < r.x || row < r.y || col >= r.x + r.width || row >= r.y + r.height {
             return None;
         }
-        let (x, y) = (col - r.x , row - r.y);
+        let (x, y) = (col - r.x, row - r.y);
         Board::in_bounds(x, y).then_some((x, y))
     }
 
@@ -322,9 +325,9 @@ impl App {
         let points = board::brush(centres, self.brush);
         self.board.paint(color, &points);
         for chunk in points.chunks(MAX_POINTS) {
-            self.emit(Msg::Draw { 
-                color, 
-                points: chunk.to_vec(), 
+            self.emit(Msg::Draw {
+                color,
+                points: chunk.to_vec(),
             });
         }
     }
@@ -333,9 +336,9 @@ impl App {
         if self.last_sent_cursor != Some(p) && self.emit(Msg::Cursor { x: p.0, y: p.1 }) {
             self.last_sent_cursor = Some(p);
         }
-    }    
+    }
 
-    /// Queues `msg` for the peer. Nothing is quedued, while alone: the relay would refuse traffic before pairing, and a 
+    /// Queues `msg` for the peer. Nothing is quedued, while alone: the relay would refuse traffic before pairing, and a
     /// late guest gets a snapshot
     fn emit(&mut self, msg: Msg) -> bool {
         if self.connected {
@@ -352,7 +355,6 @@ impl App {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -397,8 +399,8 @@ mod tests {
         assert_eq!(app.board.get(x, y), 4);
         assert_eq!(
             app.take_outbox(),
-            vec![Msg::Draw { 
-                color: 4, 
+            vec![Msg::Draw {
+                color: 4,
                 points: vec![[x, y]]
             }]
         );

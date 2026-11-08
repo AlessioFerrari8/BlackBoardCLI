@@ -1,6 +1,9 @@
 //! Drawing the app with ratatui
 
-use crate::{app::{App, Focus, Who}, board::{EMPTY, HEIGHT, WIDTH}};
+use crate::{
+    app::{App, Focus, Who},
+    board::{EMPTY, HEIGHT, WIDTH},
+};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -11,7 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 // Chalkboard green
 const SLATE: Color = Color::Rgb(28, 54, 40);
-const CHAT_MIN_WIDTH : u16 = 28;
+const CHAT_MIN_WIDTH: u16 = 28;
 
 pub fn color_of(c: u8) -> Color {
     match c {
@@ -47,7 +50,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Chat on the right when it fits, below the board otherwise
     let (board_area, chat_area) = if main.width >= board_outer.0 + CHAT_MIN_WIDTH {
-        let [b, c] = Layout::horizontal([Constraint::Length(board_outer.0), Constraint::Min(CHAT_MIN_WIDTH)]).areas(main);
+        let [b, c] =
+            Layout::horizontal([Constraint::Length(board_outer.0), Constraint::Min(CHAT_MIN_WIDTH)]).areas(main);
         let [b, _] = Layout::vertical([Constraint::Length(board_outer.1), Constraint::Min(0)]).areas(b);
         (b, c)
     } else {
@@ -57,8 +61,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_board(frame, app, board_area);
     draw_chat(frame, app, chat_area);
-    draw_status(frame, app, status);    
-
+    draw_status(frame, app, status);
 }
 
 fn focus_style(focused: bool) -> Style {
@@ -84,15 +87,15 @@ fn draw_board(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(block, area);
     if inner.width < WIDTH || inner.height < HEIGHT {
         let note = Line::styled(
-            " enlarge the terminal to see the whole board ", 
-            Style::new().fg(Color::LightRed)
+            " enlarge the terminal to see the whole board ",
+            Style::new().fg(Color::LightRed),
         );
         frame.render_widget(
-            note, 
-        Rect {
+            note,
+            Rect {
                 y: area.bottom().saturating_sub(1),
                 height: 1.min(area.height),
-                ..area            
+                ..area
             },
         );
     }
@@ -126,23 +129,31 @@ impl Widget for BoardView<'_> {
             }
         }
 
-        if let Some((x, y)) = app.peer_cursor && x < area.width && y < area.height && let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
+        if let Some((x, y)) = app.peer_cursor
+            && x < area.width
+            && y < area.height
+            && let Some(cell) = buf.cell_mut((area.x + x, area.y + y))
+        {
             cell.set_symbol("+").set_style(
                 Style::new()
                     .fg(Color::LightYellow)
                     .bg(SLATE)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD),
             );
         }
         let (x, y) = app.cursor;
-        if app.focus == Focus::Board && x < area.width && y < area.height && let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
+        if app.focus == Focus::Board
+            && x < area.width
+            && y < area.height
+            && let Some(cell) = buf.cell_mut((area.x + x, area.y + y))
+        {
             cell.set_style(Style::new().add_modifier(Modifier::REVERSED));
         }
     }
 }
 
 fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
-    let peer = if app.connected  {
+    let peer = if app.connected {
         app.peer_label().to_string()
     } else {
         "nobody yet".into()
@@ -218,10 +229,10 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
     );
     if app.focus == Focus::Chat {
         frame.set_cursor_position(Position::new(
-            input_area.x + (prompt.width() + used) as u16, 
-            input_area.y
+            input_area.x + (prompt.width() + used) as u16,
+            input_area.y,
         ));
-    } 
+    }
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -271,7 +282,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
             continue;
         }
         if !row.is_empty() {
-            rows.push(std::mem::take(& mut row));
+            rows.push(std::mem::take(&mut row));
             row_w = 0;
         }
         for c in word.chars() {
