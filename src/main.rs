@@ -1,8 +1,16 @@
-use std::{fmt::format, io::stdout, net::{IpAddr, TcpListener, UdpSocket}, time::Duration};
+use std::{
+    fmt::format,
+    io::stdout,
+    net::{IpAddr, TcpListener, UdpSocket},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use blackboard::{
-    app::{App, Role}, net::Link, relay::{self, RelayConfig}, ui,
+    app::{App, Role},
+    net::Link,
+    relay::{self, RelayConfig},
+    ui,
 };
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
@@ -51,6 +59,9 @@ enum Command {
         /// Most rooms waiting for a guest at the same time
         #[arg(long, default_value_t = 1000)]
         max_rooms: usize,
+        /// Most connections from a single ip
+        #[arg(long, default_value_t = 8)]
+        max_per_ip: usize,
     },
 }
 
@@ -66,15 +77,12 @@ struct Common {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Relay { 
-            port, 
-            bind, 
-            max_rooms 
-        } => {
-            let listener = TcpListener::bind((bind, port)).with_context(|| 
-                format!("cannot listen on {bind}:{port}"))?;
+        Command::Relay { port, bind, max_rooms, max_per_ip } => {
+            let listener =
+                TcpListener::bind((bind, port)).with_context(|| format!("cannot listen on {bind}:{port}"))?;
             let cfg = RelayConfig {
-                max_rooms,
+                max_rooms, 
+                max_conns_per_ip: max_per_ip,
                 ..RelayConfig::default()
             };
             relay::serve(listener, cfg)?;
@@ -91,18 +99,18 @@ fn main() -> Result<()> {
                     Link::relay_host(&relay)?
                 }
                 None => {
-                    let listener = TcpListener::bind((bind, port)).with_context(|| 
-                        format!("cannot listen on {bind}:{port}"))?;
-                        let ip = lan_ip().map_or_else(|| "<your-ip>".to_string(), |ip| ip.to_string());
-                        let target = if port == DEFAULT_PORT {
-                            ip
-                        } else {
-                            format!("{ip}:{port}")
-                        };
-                        app.system(format!(
-                            "waiting on port {port}, your friend runs: blackboard join {target}"
-                        ));
-                        Link::host_direct(listener)
+                    let listener =
+                        TcpListener::bind((bind, port)).with_context(|| format!("cannot listen on {bind}:{port}"))?;
+                    let ip = lan_ip().map_or_else(|| "<your-ip>".to_string(), |ip| ip.to_string());
+                    let target = if port == DEFAULT_PORT {
+                        ip
+                    } else {
+                        format!("{ip}:{port}")
+                    };
+                    app.system(format!(
+                        "waiting on port {port}, your friend runs: blackboard join {target}"
+                    ));
+                    Link::host_direct(listener)
                 }
             };
             run(app, link)

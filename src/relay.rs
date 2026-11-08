@@ -1,10 +1,17 @@
 //! Relay server: pairs two clients by room code and forward their messages
-//! 
+//!
 //! The host sends `Create` and gets back `Room { code }`; the geust sends `Join { code }`. Both then receive
 //! `PeerJoined` and from that point every peer message one sends is passed to the other. When either side leaves
 //! the other gets `PeerLeft` and both connections are closed
 
-use std::{collections::HashMap, io::{self, BufRead, BufReader, BufWriter}, net::{Shutdown, TcpListener, TcpStream}, sync::{Arc, Mutex}, thread, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    io::{self, BufRead, BufReader, BufWriter},
+    net::{IpAddr, Shutdown, TcpListener, TcpStream},
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::protocol::{self, Msg};
 
@@ -14,7 +21,8 @@ pub const CODE_LEN: usize = 6;
 #[derive(Debug, Clone)]
 pub struct RelayConfig {
     pub max_rooms: usize,
-    // Time a client has 
+    pub max_conns_per_ip: usize,
+    // Time a client has
     pub handshake_timeout: Duration,
     // Time a room may wait for its guest
     pub room_ttl: Duration,
@@ -24,6 +32,7 @@ impl Default for RelayConfig {
     fn default() -> Self {
         Self {
             max_rooms: 1000,
+            max_conns_per_ip: 8,
             handshake_timeout: Duration::from_secs(10),
             room_ttl: Duration::from_secs(15 * 60),
         }
@@ -33,18 +42,40 @@ impl Default for RelayConfig {
 struct Waiting {
     host: TcpStream,
     since: Instant,
+    /// The host's per-IP slot travels with its socket, so it stays counted for as long as the connection lives, paired or not
+    _slot: IpSlot,
 }
 
 struct State {
     cfg: RelayConfig,
     rooms: Mutex<HashMap<String, Waiting>>,
+    per_ip: Mutex<HashMap<IpAddr, usize>>,
+}
+
+// Decrements the per-IP counter when the connection's last handle drops
+struct IpSlot {
+    state: Arc<State>,
+    ip: IpAddr,
+}
+
+impl Drop for IpSlot {
+    fn drop(&mut self) {
+        let mut map = lock(&self.state.per_ip);
+        if let Some(n) = map.get_mut(&self.ip) {
+            *n -= 1;
+            if *n == 0 {
+                map.remove(&self.ip);
+            }
+        } 
+    }
 }
 
 /// Serves forever on `listener`. Logs one line per event to stderr
 pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
     let state = Arc::new(State {
-        cfg, 
+        cfg,
         rooms: Mutex::new(HashMap::new()),
+        per_ip: Mutex::new(HashMap::new()),
     });
     eprintln!("realy listening on {}", listener.local_addr()?);
 
@@ -65,17 +96,32 @@ pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
             }
         };
         let Ok(peer) = stream.peer_addr() else { continue };
+        let ip = peer.ip();
+        {
+            let mut map = lock(&state.per_ip);
+            let n = map.entry(ip).or_insert(0);
+            if *n >= state.cfg.max_conns_per_ip {
+                drop(map);
+                refuse(stream, "too many connections from your address");
+                continue;
+            }
+            *n += 1;
+        }
+        let slot = IpSlot {
+            state: Arc::clone(&state),
+            ip,
+        };
         let state = Arc::clone(&state);
         thread::spawn(move || {
-            if let Err(e) = handle(stream, &state) {
+            if let Err(e) = handle(stream, &state, slot) {
                 eprintln!("{peer}: {e}")
             }
         });
     }
-    Ok(())    
-} 
+    Ok(())
+}
 
-fn handle(stream: TcpStream, state: &Arc<State>) -> io::Result<()> {
+fn handle(stream: TcpStream, state: &Arc<State>, slot: IpSlot) -> io::Result<()> {
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(state.cfg.handshake_timeout))?;
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -111,6 +157,7 @@ fn handle(stream: TcpStream, state: &Arc<State>) -> io::Result<()> {
                     Waiting {
                         host: stream.try_clone()?,
                         since: Instant::now(),
+                        _slot: slot,
                     },
                 );
                 code
@@ -123,13 +170,15 @@ fn handle(stream: TcpStream, state: &Arc<State>) -> io::Result<()> {
         Some(Msg::Join { code }) => {
             let code = code.trim().to_ascii_uppercase();
             let host = lock(&state.rooms).remove(&code);
-            let Some(Waiting { host, .. }) = host else {
+            let Some(Waiting { 
+                host, _slot: host_slot, .. }) = host else {
                 refuse(stream, "no room with that code (it may have expired)");
                 return Ok(());
             };
             eprintln!("room {code} paired");
             pair(host, stream)?;
             eprintln!("room {code} closed");
+            drop((slot, host_slot));
             Ok(())
         }
         Some(_) => {
@@ -213,7 +262,6 @@ fn expire_rooms(state: &State) {
         eprintln!("room {code} expired");
         refuse(w.host, "nobody joined in time, room closed")
     }
-
 }
 
 fn refuse(stream: TcpStream, reason: &str) {
