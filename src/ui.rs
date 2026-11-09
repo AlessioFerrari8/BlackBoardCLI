@@ -190,7 +190,8 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(tail.to_string()),
                 ]));
             } else {
-                // let s = if msg.who == Who::System { style } else { Style::new() };
+                let s = if msg.who == Who::System { style } else { Style::new() };
+                lines.push(Line::styled(row, s));
             }
         }
     }
@@ -332,5 +333,15 @@ mod tests {
             assert_eq!(app.cell_at(r.x, r.y), Some((0, 0)));
             assert_eq!(term.backend().buffer()[(r.x, r.y)].symbol(), "█")
         }
+    }
+
+    #[test]
+    fn system_lines_and_wrapped_rows_are_shown() {
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut app = App::new(Role::Host, "me");
+        app.system("waiting on port 7878");
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let screen: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(screen.contains("waiting on port 7878"));
     }
 }
