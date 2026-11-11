@@ -117,14 +117,21 @@ impl Widget for BoardView<'_> {
         let app = self.app;
         for y in 0..area.height {
             for x in 0..area.width {
-                let c = app.board.get(x, y);
+                let c = app.board.cell(x, y);
                 let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) else {
                     continue;
                 };
-                if c == EMPTY {
-                    cell.set_symbol(" ").set_style(Style::new().bg(SLATE));
-                } else {
-                    cell.set_symbol("█").set_style(Style::new().fg(color_of(c)).bg(SLATE));
+                match c.glyph {
+                    Some(g) => {
+                        let style = Style::new().fg(color_of(c.color)).bg(SLATE).add_modifier(Modifier::BOLD);
+                        cell.set_char(g).set_style(style);
+                    }
+                    None if c.color == EMPTY => {
+                        cell.set_symbol(" ").set_style(Style::new().bg(SLATE));
+                    }
+                    None => {
+                        cell.set_symbol("█").set_style(Style::new().fg(color_of(c.color)).bg(SLATE));
+                    }
                 }
             }
         }
@@ -140,6 +147,15 @@ impl Widget for BoardView<'_> {
                     .bg(SLATE)
                     .add_modifier(Modifier::BOLD),
             );
+        }
+        // The shape being drawn, before it is committed
+        if let Some((color, points)) = app.preview() {
+            let (symbol, fg) = if color == EMPTY { ("░", Color::Gray) } else { ("▓", color_of(color)) };
+            for [x, y] in points {
+                if x < area.width && y < area.height && let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
+                    cell.set_symbol(symbol).set_style(Style::new().fg(fg).bg(SLATE));
+                }
+            }
         }
         let (x, y) = app.cursor;
         if app.focus == Focus::Board
@@ -251,7 +267,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     };
     let keys = match app.focus {
         Focus::Board => {
-            "drag to draw · right drag erase · 1-8 color · 0 eraser · +/- brush · C clear · Tab chat · q quit"
+            "drag to draw · right drag erase · P pen L line R rect · 1-8 color · 0 eraser · +/- brush · C clear · Tab chat · q quit"
         }
         Focus::Chat => "Enter send · Esc/Tab back to the board · Ctrl + C quit",
     };
@@ -259,7 +275,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" ● ", dot),
         Span::raw(format!("{state} ")),
         swatch,
-        Span::raw(format!(" {} · brush {} ", color_name(app.color), app.brush)),
+        Span::raw(format!(" {} · {} · brush {} ", color_name(app.color), app.tool.name(), app.brush)),
         Span::styled(keys, Style::new().fg(Color::DarkGray)),
     ]);
     frame.render_widget(line, area);

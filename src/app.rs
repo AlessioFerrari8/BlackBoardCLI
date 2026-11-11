@@ -28,6 +28,27 @@ pub enum Focus {
     Chat,
 }
 
+/// What a press on the board does
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    // Free hand: paints where you drag
+    Pen,
+    // Press at one end, release at the other
+    Line,
+    // Press at one corner, release at the opposite one
+    Rect,
+}
+
+impl Tool {
+    pub fn name(self) -> &'static str {
+        match self {
+            Tool::Pen => "pen",
+            Tool::Line => "line",
+            Tool::Rect => "rect",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Who {
     Me,
@@ -59,6 +80,9 @@ pub struct App {
     // Current chalk; 0 is the eraser
     pub color: u8,
     pub brush: u16,
+    pub tool: Tool,
+    /// Where the line or rectangle being drawn starts, with its color. It ends at the cursor
+    pub anchor: Option<((u16, u16), u8)>,
     // Keyboard cursor on the board
     pub cursor: (u16, u16),
     pub peer_cursor: Option<(u16, u16)>,
@@ -90,6 +114,8 @@ impl App {
             focus: Focus::Board,
             color: 1,
             brush: 1,
+            tool: Tool::Pen,
+            anchor: None,
             cursor: (WIDTH / 2, HEIGHT / 2),
             peer_cursor: None,
             board_rect: Rect::default(),
@@ -150,6 +176,7 @@ impl App {
                         w: WIDTH,
                         h: HEIGHT,
                         runs: self.board.to_runs(),
+                        glyphs: self.board.glyph_list(),
                     });
                 }
             }
@@ -187,8 +214,16 @@ impl App {
                 }
             }
             Msg::Cursor { x, y } => self.peer_cursor = Board::in_bounds(x, y).then_some((x, y)),
-            Msg::Snapshot { w, h, runs } => match Board::from_runs(w, h, &runs) {
-                Some(b) => self.board = b,
+            Msg::Text { color, x, y, text } => {
+                // `write` skips anything that is not a letter, escapes included, and stops at the edge
+                let text: String = text.chars().take(WIDTH as usize).collect();
+                self.board.write(color, x, y, &text);
+            }
+            Msg::Snapshot { w, h, runs, glyphs } => match Board::from_runs(w, h, &runs) {
+                Some(mut b) => {
+                    b.add_glyphs(&glyphs);
+                    self.board = b;
+                } 
                 None => self.system("error: received a board that does not fit, ignored it"),
             },
             Msg::Create | Msg::Join { .. } => {}
@@ -246,8 +281,12 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor((x + 1).min(WIDTH - 1), y),
             KeyCode::Up | KeyCode::Char('k') => self.move_cursor(x, y.saturating_sub(1)),
             KeyCode::Down | KeyCode::Char('j') => self.move_cursor(x, (y + 1).min(HEIGHT - 1)),
-            KeyCode::Char(' ') => self.stroke(self.color, &[self.cursor]),
-            KeyCode::Char('x') => self.stroke(board::EMPTY, &[self.cursor]),
+            KeyCode::Char(' ') => self.press(self.color),
+            KeyCode::Char('x') => self.press(board::EMPTY),
+            KeyCode::Esc => self.anchor = None,
+            KeyCode::Char('P') => self.set_tool(Tool::Pen),
+            KeyCode::Char('L') => self.set_tool(Tool::Line),
+            KeyCode::Char('R') => self.set_tool(Tool::Rect),
             KeyCode::Char(d @ '0'..='9') => {
                 let n = d as u8 - b'0';
                 if n <= PALETTE_LEN {
@@ -264,6 +303,41 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn set_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+        self.anchor = None;
+    }
+
+    /// Space or x on the keyboard: the pen paints right away, a shape takes two presses, one per end
+    fn press(&mut self, color: u8) {
+        if self.tool == Tool::Pen {
+            self.stroke(color, &[self.cursor]);
+            return;
+        }
+        match self.anchor.take() {
+            Some((start, color)) => self.finish_shape(start, color),
+            None => self.anchor = Some((self.cursor, color)),
+        }
+    }
+
+    /// Cells the shape in progress would paint, for the UI to show before it is committed
+    pub fn preview(&self) -> Option<(u8, Vec<[u16; 2]>)> {
+        let (start, color) = self.anchor?;
+        Some((color, board::brush(&self.shape(start, self.cursor), self.brush)))
+    }
+
+    fn shape(&self, a: (u16, u16), b: (u16, u16)) -> Vec<(u16, u16)> {
+        match self.tool {
+            Tool::Rect => board::rect(a, b),
+            _ => board::line(a, b),
+        }
+    }
+
+    fn finish_shape(&mut self, start: (u16, u16), color: u8) {
+        let cells = self.shape(start, self.cursor);
+        self.stroke(color, &cells);
     }
 
     fn move_cursor(&mut self, x: u16, y: u16) {
@@ -286,7 +360,11 @@ impl App {
                 self.focus = Focus::Board;
                 self.cursor = p;
                 self.drag = Some((p, color));
-                self.stroke(color, &[p]);
+                if self.tool == Tool::Pen {
+                    self.stroke(color, &[p]);
+                } else {
+                    self.anchor = Some((p, color));
+                }
                 self.send_cursor(p);
             }
             MouseEventKind::Drag(_) => {
@@ -294,13 +372,23 @@ impl App {
                     return;
                 };
                 if p != last {
-                    self.stroke(color, &board::line(last, p));
+                    if self.tool == Tool::Pen {
+                        self.stroke(color, &board::line(last, p));
+                    }
                     self.drag = Some((p, color));
                     self.cursor = p;
                     self.send_cursor(p);
                 }
             }
-            MouseEventKind::Up(_) => self.drag = None,
+            MouseEventKind::Up(_) => {
+                // A shape ends where the mouse was released, or at the last cell of the board it was dragged over
+                if self.drag.take().is_some() && let Some((start, color)) = self.anchor.take() {
+                    if let Some(p) = cell {
+                        self.cursor = p;
+                    }
+                    self.finish_shape(start, color);
+                }
+            } 
             MouseEventKind::Moved => {
                 if let Some(p) = cell {
                     self.send_cursor(p);
@@ -553,6 +641,7 @@ mod tests {
             w: 3,
             h: 3,
             runs: vec![[1, 9]],
+            glyphs: vec![],
         }));
         assert!(app.board.is_empty());
         app.on_net(NetEvent::Msg(Msg::PeerLeft));
