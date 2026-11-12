@@ -37,6 +37,8 @@ pub enum Tool {
     Line,
     // Press at one corner, release at the opposite one
     Rect,
+    // Click and type letters on the board
+    Text,
 }
 
 impl Tool {
@@ -45,6 +47,7 @@ impl Tool {
             Tool::Pen => "pen",
             Tool::Line => "line",
             Tool::Rect => "rect",
+            Tool::Text => "text",
         }
     }
 }
@@ -81,12 +84,14 @@ pub struct App {
     pub color: u8,
     pub brush: u16,
     pub tool: Tool,
-    /// Where the line or rectangle being drawn starts, with its color. It ends at the cursor
+    // Where the line or rectangle being drawn starts, with its color. It ends at the cursor
     pub anchor: Option<((u16, u16), u8)>,
+    // While typing on the board: the column a new line goes back to. The next letter goes at the cursor
+    pub typing: Option<u16>,
     // Keyboard cursor on the board
     pub cursor: (u16, u16),
     pub peer_cursor: Option<(u16, u16)>,
-    /// Screen area the board is drawn in; set by the UI on every frame and used to turn mouse positions into board cells
+    // Screen area the board is drawn in; set by the UI on every frame and used to turn mouse positions into board cells
     pub board_rect: Rect,
     pub quit: bool,
     drag: Option<((u16, u16), u8)>,
@@ -116,6 +121,7 @@ impl App {
             brush: 1,
             tool: Tool::Pen,
             anchor: None,
+            typing: None,
             cursor: (WIDTH / 2, HEIGHT / 2),
             peer_cursor: None,
             board_rect: Rect::default(),
@@ -238,6 +244,7 @@ impl App {
             return;
         }
         if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
+            self.typing = None;
             self.focus = match self.focus {
                 Focus::Board => Focus::Chat,
                 Focus::Chat => Focus::Board,
@@ -246,6 +253,7 @@ impl App {
         }
         match self.focus {
             Focus::Chat => self.chat_key(key),
+            Focus::Board if self.typing.is_some() => self.text_key(key),
             Focus::Board => self.board_key(key),
         }
     }
@@ -287,6 +295,7 @@ impl App {
             KeyCode::Char('P') => self.set_tool(Tool::Pen),
             KeyCode::Char('L') => self.set_tool(Tool::Line),
             KeyCode::Char('R') => self.set_tool(Tool::Rect),
+            KeyCode::Char('T') => self.set_tool(Tool::Text),
             KeyCode::Char(d @ '0'..='9') => {
                 let n = d as u8 - b'0';
                 if n <= PALETTE_LEN {
@@ -308,17 +317,16 @@ impl App {
     fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.anchor = None;
+        self.typing = None;
     }
 
-    /// Space or x on the keyboard: the pen paints right away, a shape takes two presses, one per end
+    /// Space or x on the keyboard: the pen paints right away, a shape takes two presses, one per end, text starts writing
     fn press(&mut self, color: u8) {
-        if self.tool == Tool::Pen {
-            self.stroke(color, &[self.cursor]);
-            return;
-        }
-        match self.anchor.take() {
-            Some((start, color)) => self.finish_shape(start, color),
-            None => self.anchor = Some((self.cursor, color)),
+        match (self.tool, self.anchor.take()) {
+            (Tool::Pen, _) => self.stroke(color, &[self.cursor]),
+            (Tool::Text, _) => self.start_typing(self.cursor),
+            (_, Some((start, color))) => self.finish_shape(start, color),
+            (_, None) => self.anchor = Some((self.cursor, color)),   
         }
     }
 
@@ -340,6 +348,46 @@ impl App {
         self.stroke(color, &cells);
     }
 
+    fn start_typing(&mut self, at: (u16, u16)) {
+        if self.color == board::EMPTY {
+            self.system("pick a chalk (1-8) to write with");
+            return;
+        }
+        self.cursor = at;
+        self.typing = Some(at.0);
+    }
+
+    /// Keys while typing on the board: letters go in and the cursor moves right, Enter starts a new line under the first letter,
+    /// Esc just stops
+    fn text_key(&mut self, key: KeyEvent) {
+        let Some(start) = self.typing else { return };
+        let (x, y) = self.cursor;
+        match key.code {
+            KeyCode::Esc => self.typing = None,
+            KeyCode::Enter => self.move_cursor(start, (y + 1).min(HEIGHT - 1)),
+            KeyCode::Backspace if x > start => {
+                self.move_cursor(x - 1, y);
+                self.stroke_cells(board::EMPTY, &[[x - 1, y]]);
+            }
+            KeyCode::Char(c) if board::is_glyph(c) && x < WIDTH => {
+                let color = self.color;
+                self.board.write(color, x, y, &c.to_string());
+                self.emit(Msg::Text { 
+                    color, 
+                    x, 
+                    y, 
+                    text: c.to_string(),
+                });
+                self.move_cursor((x + 1).min(WIDTH - 1), y);
+            }
+            KeyCode::Char(' ') if x < WIDTH => {
+                self.stroke_cells(board::EMPTY, &[[x, y]]);
+                self.move_cursor((x + 1).min(WIDTH - 1), y)
+            }
+            _ => {}
+        }
+    }
+
     fn move_cursor(&mut self, x: u16, y: u16) {
         self.cursor = (x, y);
         self.send_cursor((x, y));
@@ -358,6 +406,13 @@ impl App {
                     MouseButton::Middle => return,
                 };
                 self.focus = Focus::Board;
+                if self.tool == Tool::Text {
+                    if button == MouseButton::Left {
+                        self.start_typing(p);
+                        self.send_cursor(p);
+                    }
+                    return;
+                }
                 self.cursor = p;
                 self.drag = Some((p, color));
                 if self.tool == Tool::Pen {
@@ -411,7 +466,11 @@ impl App {
     // helpers
     fn stroke(&mut self, color: u8, centres: &[(u16, u16)]) {
         let points = board::brush(centres, self.brush);
-        self.board.paint(color, &points);
+        self.stroke_cells(color, &points);
+    }
+
+    fn stroke_cells(&mut self, color: u8, points: &[[u16; 2]]) {
+        self.board.paint(color, points);
         for chunk in points.chunks(MAX_POINTS) {
             self.emit(Msg::Draw {
                 color,
@@ -419,7 +478,7 @@ impl App {
             });
         }
     }
-
+    
     fn send_cursor(&mut self, p: (u16, u16)) {
         if self.last_sent_cursor != Some(p) && self.emit(Msg::Cursor { x: p.0, y: p.1 }) {
             self.last_sent_cursor = Some(p);
