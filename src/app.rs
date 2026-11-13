@@ -1,11 +1,13 @@
 //! Application state and input handling. No I/O happens here: network events come in through [`App::on_net`], terminal events
 //! through `on_key` and `on_mouse`, and outgoing messages pile up until [`App::take_outbox`]
 
+use std::collections::HashMap;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::{
-    board::{self, Board, HEIGHT, PALETTE_LEN, WIDTH},
+    board::{self, Board, Cell, HEIGHT, PALETTE_LEN, WIDTH},
     net::NetEvent,
     protocol::{MAX_CHAT, MAX_NAME, MAX_POINTS, Msg, PROTO_VERSION, sanitize},
 };
@@ -14,6 +16,12 @@ pub const MAX_BRUSH: u16 = 5;
 const CHAT_HISTORY: usize = 500;
 const MAX_ROOM_CODE: usize = 16;
 const MAX_CLOSE_REASON: usize = 200;
+
+/// Strokes you can take back with undo
+const UNDO_HISTORY: usize = 100;
+
+/// One undoable stroke: for each cell it touched, what was there before and what the stroke left
+type Stroke = HashMap<(u16, u16), (Cell, Cell)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -95,6 +103,9 @@ pub struct App {
     pub board_rect: Rect,
     pub quit: bool,
     drag: Option<((u16, u16), u8)>,
+    /// The stroke being drawn (a mouse drag, a typing session), still open
+    open: Option<Stroke>,
+    undo: Vec<Stroke>,
     last_sent_cursor: Option<(u16, u16)>,
     outbox: Vec<Msg>,
 }
@@ -127,6 +138,8 @@ impl App {
             board_rect: Rect::default(),
             quit: false,
             drag: None,
+            open: None,
+            undo: Vec::new(),
             last_sent_cursor: None,
             outbox: Vec::new(),
         }
@@ -211,6 +224,7 @@ impl App {
             Msg::Draw { color, points } => self.board.paint(color, &points),
             Msg::Clear => {
                 self.board.clear();
+                self.forget_undo();
                 self.system(format!("{} cleared the board", self.peer_label()));
             }
             Msg::Chat { text } => {
@@ -229,6 +243,7 @@ impl App {
                 Some(mut b) => {
                     b.add_glyphs(&glyphs);
                     self.board = b;
+                    self.forget_undo();
                 } 
                 None => self.system("error: received a board that does not fit, ignored it"),
             },
@@ -244,7 +259,7 @@ impl App {
             return;
         }
         if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
-            self.typing = None;
+            self.stop_typing();
             self.focus = match self.focus {
                 Focus::Board => Focus::Chat,
                 Focus::Chat => Focus::Board,
@@ -305,8 +320,11 @@ impl App {
             KeyCode::Char('e') => self.color = board::EMPTY,
             KeyCode::Char('+') | KeyCode::Char('=') => self.brush = (self.brush + 1).min(MAX_BRUSH),
             KeyCode::Char('-') => self.brush = self.brush.saturating_sub(1).max(1),
+            KeyCode::Char('u') => self.undo(),
+            KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => self.undo(),
             KeyCode::Char('C') => {
                 self.board.clear();
+                self.forget_undo();
                 self.emit(Msg::Clear);
                 self.system("you cleared the board");
             }
@@ -317,9 +335,9 @@ impl App {
     fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.anchor = None;
-        self.typing = None;
+        self.stop_typing();
     }
-
+    
     /// Space or x on the keyboard: the pen paints right away, a shape takes two presses, one per end, text starts writing
     fn press(&mut self, color: u8) {
         match (self.tool, self.anchor.take()) {
@@ -353,8 +371,18 @@ impl App {
             self.system("pick a chalk (1-8) to write with");
             return;
         }
+        self.stop_typing();
         self.cursor = at;
         self.typing = Some(at.0);
+        // The whole typing session is one stroke for undo
+        self.close_stroke();
+        self.open = Some(Stroke::new());
+    }
+
+    fn stop_typing(&mut self) {
+        if self.typing.take().is_some() {
+            self.close_stroke()
+        }
     }
 
     /// Keys while typing on the board: letters go in and the cursor moves right, Enter starts a new line under the first letter,
@@ -363,7 +391,7 @@ impl App {
         let Some(start) = self.typing else { return };
         let (x, y) = self.cursor;
         match key.code {
-            KeyCode::Esc => self.typing = None,
+            KeyCode::Esc => self.stop_typing(),
             KeyCode::Enter => self.move_cursor(start, (y + 1).min(HEIGHT - 1)),
             KeyCode::Backspace if x > start => {
                 self.move_cursor(x - 1, y);
@@ -371,7 +399,9 @@ impl App {
             }
             KeyCode::Char(c) if board::is_glyph(c) && x < WIDTH => {
                 let color = self.color;
-                self.board.write(color, x, y, &c.to_string());
+                self.record(&[[x, y]], |b| {
+                    b.write(color, x, y, &c.to_string());
+                });
                 self.emit(Msg::Text { 
                     color, 
                     x, 
@@ -416,6 +446,9 @@ impl App {
                 self.cursor = p;
                 self.drag = Some((p, color));
                 if self.tool == Tool::Pen {
+                    // Everything until the button goes up is one stroke for undo
+                    self.close_stroke();
+                    self.open = Some(Stroke::new());
                     self.stroke(color, &[p]);
                 } else {
                     self.anchor = Some((p, color));
@@ -436,6 +469,9 @@ impl App {
                 }
             }
             MouseEventKind::Up(_) => {
+                if self.tool == Tool::Pen {
+                    self.close_stroke();
+                }
                 // A shape ends where the mouse was released, or at the last cell of the board it was dragged over
                 if self.drag.take().is_some() && let Some((start, color)) = self.anchor.take() {
                     if let Some(p) = cell {
@@ -470,7 +506,7 @@ impl App {
     }
 
     fn stroke_cells(&mut self, color: u8, points: &[[u16; 2]]) {
-        self.board.paint(color, points);
+        self.record(points, |b| b.paint(color, points));
         for chunk in points.chunks(MAX_POINTS) {
             self.emit(Msg::Draw {
                 color,
@@ -478,7 +514,81 @@ impl App {
             });
         }
     }
+
+    /// Applies `change` to the board and remembers what it did to `cells`, for undo. Outisde an open stroke the change is 
+    /// a stroke of its own
+    fn record(&mut self, cells: &[[u16; 2]], change: impl FnOnce(&mut Board)) {
+        let before: Vec<Cell> = cells.iter().map(|&[x, y]| self.board.cell(x, y)).collect();
+        change(&mut self.board);
+        let single = self.open.is_none();
+        let stroke = self.open.get_or_insert_with(Stroke::new);
+        for (&[x, y], before) in cells.iter().zip(before) {
+            let after = self.board.cell(x, y);
+            // The first `before` wins: it is what the cell held when the stroke started
+            stroke.entry((x, y)).or_insert((before, after)).1 = after;
+        }
+        if single {
+            self.close_stroke();
+        }
+    }
+
+    fn close_stroke(&mut self) {
+        let Some(mut stroke) = self.open.take() else { return };
+        stroke.retain(|_, (before, after)| before != after);
+        if stroke.is_empty() {
+            return;
+        }
+        self.undo.push(stroke);
+        if self.undo.len() > UNDO_HISTORY {
+            self.undo.remove(0);
+        }
+    }
     
+    fn forget_undo(&mut self) {
+        self.open = None;
+        self.undo.clear();
+    }
+
+    /// Takes back your last stroke. A cell your friend has drawn over since then is left alone, so undo only removes your
+    /// own chalk. The result is sent as ordinary drawing, so the other side needs nothing special
+    fn undo(&mut self) {
+        self.close_stroke();
+        let Some(stroke) = self.undo.pop() else {
+            self.system("nothing to undo");
+            return;
+        };
+        let mut by_color: HashMap<u8, Vec<[u16; 2]>> = HashMap::new();
+        let mut letters = Vec::new();
+        let mut cells: Vec<_> = stroke.into_iter().collect();
+        cells.sort_unstable_by_key(|&((x, y), _)| (y, x));
+        for ((x, y), (before, after)) in cells {
+            if self.board.cell(x, y) != after {
+                continue;
+            }
+            self.board.set(x, y, before);
+            match before.glyph {
+                Some(c) => letters.push(Msg::Text { 
+                    color: before.color, 
+                    x, 
+                    y, 
+                    text: c.to_string(),
+                }),
+                None => by_color.entry(before.color).or_default().push([x, y]),
+            }
+        }
+        let mut colors: Vec<_> = by_color.into_iter().collect();
+        colors.sort_unstable_by_key(|(c, _)| *c);
+        for (color, points) in colors {
+            for chunk in points.chunks(MAX_POINTS) {
+                self.emit(Msg::Draw { color, points: chunk.to_vec(), });
+            }
+        }
+        for msg in letters {
+            self.emit(msg);
+        }
+    }
+
+
     fn send_cursor(&mut self, p: (u16, u16)) {
         if self.last_sent_cursor != Some(p) && self.emit(Msg::Cursor { x: p.0, y: p.1 }) {
             self.last_sent_cursor = Some(p);
