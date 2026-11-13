@@ -1,4 +1,5 @@
-//! Wire protocol: one JSON object per line over TCP.
+//! Wire protocol: one JSON object per message. Over plain TCP (direct mode) each message is a line; through the relay
+//! each message is a WebSocket text frame
 //!
 //! The same enum carries p2p messages (drawing, chat, ...) and the relay controls messages (room codes, pairing). The relay
 //! only forwards the variants for which [`Msg::is_peer_msg`] is true, so a peer can never fake a control message
@@ -6,11 +7,14 @@
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
 
-/// Bumped on every incompatible change to [`Msg`]
-pub const PROTO_VERSION: u32 = 1;
+use crate::board::Glyph;
 
-/// Longest line accepted from the network, in Bytes. The worst case is a full snapshot of an 80*24 board
-pub const MAX_LINE: usize = 64 * 1024;
+/// Bumped on every incompatible change to [`Msg`]
+pub const PROTO_VERSION: u32 = 2;
+
+/// Longest line accepted from the network, in Bytes. The worst case is a full snapshot of an 80*24 board with a letter in
+/// every cell, about 60 KiB
+pub const MAX_LINE: usize = 128 * 1024;
 
 /// Max points a single `Draw` message may carry
 pub const MAX_POINTS: usize = 4096;
@@ -27,8 +31,16 @@ pub enum Msg {
     Clear,
     Chat { text: String },
     Cursor { x: u16, y: u16 },
-    // Whole board, run-length encoded as `[color, run]` pairs in row-major order
-    Snapshot { w: u16, h: u16, runs: Vec<[u16; 2]> },
+    // Write `text` from (x, y) to the right, one letter per cell
+    Text { color: u8, x: u16, y: u16, text: String },
+    // Whole board, run-length encoded as `[color, run]` pairs in row-major order, plus the letters on it
+    Snapshot { 
+        w: u16, 
+        h: u16, 
+        runs: Vec<[u16; 2]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        glyphs: Vec<Glyph>,
+    },
 
     // Client to relay
     Create,
@@ -51,14 +63,29 @@ impl Msg {
                 | Msg::Clear
                 | Msg::Chat { .. }
                 | Msg::Cursor { .. }
+                | Msg::Text { .. }
                 | Msg::Snapshot { .. }
         )
     }
 }
 
+/// One message as JSON, without a newline
+pub fn encode(msg: &Msg) -> String {
+    // Serializing this enum cannot fail: every field is a plain number, string or list
+    serde_json::to_string(msg).expect("a message always serializes")
+}
+
+/// Decodes one message, refusing anything longer than [`MAX_LINE`]
+pub fn decode(text: &str) -> io::Result<Msg> {
+    if text.len() > MAX_LINE {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "message too long"));
+    }
+    serde_json::from_str(text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
 /// Serialises `msg` and writes it as a single line
 pub fn write_msg(w: &mut impl Write, msg: &Msg) -> io::Result<()> {
-    let mut line = serde_json::to_vec(msg).map_err(io::Error::other)?;
+    let mut line = encode(msg).into_bytes();
     line.push(b'\n');
     w.write_all(&line)?;
     w.flush()
@@ -147,10 +174,17 @@ mod tests {
             Msg::Clear,
             Msg::Chat { text: "ciao".into() },
             Msg::Cursor { x: 5, y: 6 },
+            Msg::Text { 
+                color: 2,
+                x: 1,
+                y: 1,
+                text: "hey".into(),
+            },
             Msg::Snapshot {
                 w: 2,
                 h: 1,
                 runs: vec![[0, 2]],
+                glyphs: vec![Glyph { x: 0, y: 0, c: 'a' }],
             },
             Msg::Create,
             Msg::Join { code: "ABC234".into() },
@@ -169,6 +203,13 @@ mod tests {
             assert_eq!(read_msg(&mut r, &mut buf).unwrap().as_ref(), Some(m));
         }
         assert_eq!(read_msg(&mut r, &mut buf).unwrap(), None);
+    }
+
+    #[test]
+    fn encode_and_decode_match_the_line_format() {
+        let msg = Msg::Chat { text: "ciao".into() };
+        assert_eq!(decode(&encode(&msg)).unwrap(), msg);
+        assert!(decode(&"x".repeat(MAX_LINE + 1)).is_err());
     }
 
     #[test]
