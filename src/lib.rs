@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod board;
+pub mod file;
 pub mod net;
 pub mod protocol;
 pub mod relay;

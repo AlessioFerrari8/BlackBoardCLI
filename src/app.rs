@@ -102,6 +102,8 @@ pub struct App {
     // Screen area the board is drawn in; set by the UI on every frame and used to turn mouse positions into board cells
     pub board_rect: Rect,
     pub quit: bool,
+    /// Set by `S`: the main loop writes the board to disk, since the app does no I/O
+    pub save_requested: bool,
     drag: Option<((u16, u16), u8)>,
     /// The stroke being drawn (a mouse drag, a typing session), still open
     open: Option<Stroke>,
@@ -137,6 +139,7 @@ impl App {
             peer_cursor: None,
             board_rect: Rect::default(),
             quit: false,
+            save_requested: false,
             drag: None,
             open: None,
             undo: Vec::new(),
@@ -321,6 +324,7 @@ impl App {
             KeyCode::Char('+') | KeyCode::Char('=') => self.brush = (self.brush + 1).min(MAX_BRUSH),
             KeyCode::Char('-') => self.brush = self.brush.saturating_sub(1).max(1),
             KeyCode::Char('u') => self.undo(),
+            KeyCode::Char('S') => self.save_requested = true,
             KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => self.undo(),
             KeyCode::Char('C') => {
                 self.board.clear();

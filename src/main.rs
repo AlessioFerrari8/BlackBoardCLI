@@ -1,12 +1,11 @@
 use std::{
-    io::stdout,
-    net::{IpAddr, TcpListener, UdpSocket},
-    time::Duration,
+    io::stdout, net::{IpAddr, TcpListener, UdpSocket}, path::{Path, PathBuf}, time::Duration,
 };
 
 use anyhow::{Context, Result};
 use blackboard::{
     app::{App, Role},
+    file,
     net::Link,
     relay::{self, RelayConfig},
     ui,
@@ -41,6 +40,9 @@ enum Command {
         /// Address to listen on (direct mode)
         #[arg(long, default_value = "0.0.0.0")]
         bind: IpAddr,
+        /// Start from a board saved with S
+        #[arg(long, short)]
+        open: Option<PathBuf>,
         #[command(flatten)]
         common: Common,
     },
@@ -89,8 +91,12 @@ fn main() -> Result<()> {
             relay::serve(listener, cfg)?;
             Ok(())
         }
-        Command::Host { port, bind, common } => {
+        Command::Host { port, bind, open, common } => {
             let mut app = App::new(Role::Host, &name_or_default(common.name));
+            if let Some(path) = open {
+                app.board = file::load(&path)?;
+                app.system(format!("opened {}", path.display()));
+            }
 
             let link = match &common.relay {
                 Some(relay) => {
@@ -158,6 +164,12 @@ fn run(mut app: App, link: Link) -> Result<()> {
             }
             for msg in app.take_outbox() {
                 link.send(&msg);
+            }
+            if std::mem::take(&mut app.save_requested) {
+                match file::save(&app.board, Path::new(".")) {
+                    Ok((board, text)) => app.system(format!("saved {} and {}", board.display(), text.display())),
+                    Err(e) => app.system(format!("cannot save: {e:#}")),
+                }
             }
         }
         Ok(())

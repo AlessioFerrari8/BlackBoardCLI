@@ -268,7 +268,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let keys = match app.focus {
         Focus::Board if app.typing.is_some() => "type on the board · Enter new line · Backspace delete · Esc done",
         Focus::Board => {
-            "drag to draw · right drag erase · P pen L line R rect T text · u undo · 1-8 color · 0 eraser · +/- brush · C clear · Tab chat · q quit"
+            "drag to draw · right drag erase · P pen L line R rect T text · u undo · S save · 1-8 color · 0 eraser · +/- brush · C clear · Tab chat · q quit"
         }
         Focus::Chat => "Enter send · Esc/Tab back to the board · Ctrl + C quit",
     };
