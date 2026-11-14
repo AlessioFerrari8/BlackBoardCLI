@@ -1,4 +1,4 @@
-//! The shared drawing surface: a fixed grid of color indices
+//! The shared drawing surface: a fixed grid of color indices, where a cell can also hold a letter
 
 use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthChar;
@@ -134,7 +134,7 @@ impl Board {
             .collect()
     }
 
-    /// Puts a letter from a snapshot back. Letters on empty cells, outside the board or wider than one cell are dropped
+    /// Puts letters from a snapshot back. Letters on empty cells, outside the board or wider than one cell are dropped
     pub fn add_glyphs(&mut self, glyphs: &[Glyph]) {
         for g in glyphs {
             if Self::in_bounds(g.x, g.y) && is_glyph(g.c) {
@@ -321,8 +321,58 @@ mod tests {
                 glyph: Some('c')
             }
         );
+        assert_eq!(b.cell(79, 1).glyph, Some('a'));
+        assert_eq!(b.write(EMPTY, 0, 0, "x"), 0);
+        assert_eq!(b.write(2, 0, 0, "a\x1b一b"), 2, "escape and wide letters are skipped");
+        assert_eq!(b.cell(1, 0).glyph, Some('b'));
+        b.paint(5, &[[77, 1]]);
+        assert_eq!(b.cell(77, 1), Cell { color: 5, glyph: None });
+        b.clear();
+        assert!(b.glyph_list().is_empty());     
     }
 
+    #[test]
+    fn glyphs_travel_with_the_runs() {
+        let mut b = Board::new();
+        b.write(4, 10, 5, "hi");
+        let mut copy = Board::from_runs(WIDTH, HEIGHT, &b.to_runs()).unwrap();
+        copy.add_glyphs(&b.glyph_list());
+        assert_eq!(copy, b);
+        // A letter on an empty cell or off the board is dropped
+        copy.add_glyphs(&[Glyph { x: 0, y: 0, c: 'z' }, Glyph { x: WIDTH, y: 0, c: 'z' }]);
+        assert_eq!(copy, b);
+    }
+
+    #[test]
+    fn set_restores_a_cell() {
+        let mut b = Board::new();
+        b.set(
+            1, 
+            1, 
+            Cell {
+                color: 2,
+                glyph: Some('k'),
+            },
+        );
+        assert_eq!(b.cell(1, 1).glyph, Some('k'));
+        b.set(
+            1,
+            1,
+            Cell {
+                color: EMPTY,
+                glyph: Some('k'),
+            },
+        );
+        assert_eq!(b.cell(1, 1), Cell::default(), "an empty cell holds no letter");
+    }
+
+    #[test]
+    fn rect_is_an_outline() {
+        assert_eq!(rect((2, 2), (2, 2)), vec![(2, 2)]);
+        assert_eq!(rect((0, 0), (3, 2)).len(), 10);
+        assert_eq!(rect((3, 2), (0, 0)), rect((0, 0), (3, 2)));
+    }
+    
     #[test]
     fn brush_sizes_and_clipping() {
         assert_eq!(brush(&[(5, 5)], 1), vec![[5, 5]]);
