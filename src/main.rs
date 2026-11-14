@@ -19,6 +19,8 @@ use clap::{Args, Parser, Subcommand};
 
 const DEFAULT_PORT: u16 = 7878;
 const DEFAULT_RELAY_PORT: u16 = 7879;
+/// The public relay, run by the author on the Hack Club Nest
+const PUBLIC_RELAY: &str = "wss://blackboard.alessio.hackclub.app";
 /// Most network events handled per frame, so a flooding peer cannot keep the loop away from the keyboard
 const MAX_EVENTS_PER_FRAME: usize = 1024;
 
@@ -43,13 +45,20 @@ enum Command {
         /// Start from a board saved with S
         #[arg(long, short)]
         open: Option<PathBuf>,
+        /// Open a room on a relay instead of waiting on this machine, so your friend can join from any network. Alone,
+        /// it uses the public relay
+        #[arg(long, short, env = "BLACKBOARD_RELAY", num_args = 0..=1, default_missing_value = PUBLIC_RELAY)]
+        relay: Option<String>,
         #[command(flatten)]
         common: Common,
     },
     /// Join a friend's board
     Join {
-        /// The host's address (like 192.168.1.19 or 192.168.1.19:7878), or a room code when --relay is set
+        /// A room code (like K7P2QX), or the host's address on your network (like 192.168.1.19 or 192.168.1.19:7878)
         target: String,
+        /// Relay the room code is on
+        #[arg(long, short, env = "BLACKBOARD_RELAY", default_value = PUBLIC_RELAY)]
+        relay: String,
         #[command(flatten)]
         common: Common,
     },
@@ -73,9 +82,6 @@ struct Common {
     /// Name shown to your friend
     #[arg(long, short)]
     name: Option<String>,
-    /// Meet through this relay (host:port) instead of connecting directly
-    #[arg(long, short, env = "BLACKBOARD_RELAY")]
-    relay: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -84,24 +90,32 @@ fn main() -> Result<()> {
             let listener =
                 TcpListener::bind((bind, port)).with_context(|| format!("cannot listen on {bind}:{port}"))?;
             let cfg = RelayConfig {
-                max_rooms, 
+                max_rooms,
                 max_conns_per_ip: max_per_ip,
                 ..RelayConfig::default()
             };
             relay::serve(listener, cfg)?;
             Ok(())
         }
-        Command::Host { port, bind, open, common } => {
+        Command::Host {
+            port,
+            bind,
+            open,
+            relay,
+            common
+        } => {
             let mut app = App::new(Role::Host, &name_or_default(common.name));
             if let Some(path) = open {
                 app.board = file::load(&path)?;
                 app.system(format!("opened {}", path.display()));
             }
 
-            let link = match &common.relay {
+            let link = match &relay {
                 Some(relay) => {
-                    let relay = with_port(relay, DEFAULT_RELAY_PORT);
-                    app.join_cmd = format!("blackboard join --relay {relay}");
+                    let relay = relay_url(relay);
+                    if relay != PUBLIC_RELAY {
+                        app.join_cmd = format!("blackboard join --relay {relay}");
+                    }
                     app.system(format!("asking {relay} for a room..."));
                     Link::relay_host(&relay)?
                 }
@@ -122,11 +136,12 @@ fn main() -> Result<()> {
             };
             run(app, link)
         }
-        Command::Join { target, common } => {
+        Command::Join { target, relay, common } => {
             let app = App::new(Role::Guest, &name_or_default(common.name));
-            let link = match &common.relay {
-                Some(relay) => Link::relay_join(&with_port(relay, DEFAULT_RELAY_PORT), &target)?,
-                None => Link::join_direct(&with_port(&target, DEFAULT_PORT))?,
+            let link = if relay::is_room_code(&target) {
+                Link::relay_join(&relay_url(&relay), &target)?
+            } else {
+                Link::join_direct(&with_port(&target, DEFAULT_PORT))?
             };
             run(app, link)
         }
@@ -202,6 +217,16 @@ fn with_port(addr: &str, port: u16) -> String {
     format!("{addr}:{port}")
 }
 
+/// A relay given as `host` or `host:port` is a plain `ws://` one, like `blackboard relay` runs on a LAN
+fn relay_url(relay: &str) -> String {
+    let relay = relay.trim();
+    if relay.contains("://") {
+        relay.to_string()
+    } else {
+        format!("ws://{}", with_port(relay, DEFAULT_RELAY_PORT))
+    }
+}
+
 /// Best guess of this machine's LAN address. Connecting a UDP socket sends no packet; it only asks the OS which interface
 /// it would use
 fn lan_ip() -> Option<IpAddr> {
@@ -222,5 +247,20 @@ mod tests {
         assert_eq!(with_port("relay.example.org:80", 7879), "relay.example.org:80");
         assert_eq!(with_port("::1", 7878), "[::1]:7878");
         assert_eq!(with_port("[::1]:9000", 7878), "[::1]:9000");
+    }
+
+    #[test]
+    fn relay_addresses_become_urls() {
+        assert_eq!(relay_url(PUBLIC_RELAY), PUBLIC_RELAY);
+        assert_eq!(relay_url("192.168.1.2"), "ws://192.168.1.2:7879");
+        assert_eq!(relay_url("relay.lan:9000"), "ws://relay.lan:9000");
+    }
+
+    #[test]
+    fn cli_parses_the_relay_forms() {
+        let host = Cli::try_parse_from(["blackboard", "host", "--relay"]).unwrap();
+        assert!(matches!(host.command, Command::Host { relay: Some(r), .. } if r == PUBLIC_RELAY));
+        let join = Cli::try_parse_from(["blackboard", "join", "k7p2qx"]).unwrap();
+        assert!(matches!(join.command, Command::Join { relay, .. } if relay == PUBLIC_RELAY));
     }
 }

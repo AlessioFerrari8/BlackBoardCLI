@@ -1,28 +1,36 @@
-//! Relay server: pairs two clients by room code and forward their messages
+//! Relay server: pairs two clients by room code and forwards their messages over WebSocket
 //!
-//! The host sends `Create` and gets back `Room { code }`; the geust sends `Join { code }`. Both then receive
-//! `PeerJoined` and from that point every peer message one sends is passed to the other. When either side leaves
-//! the other gets `PeerLeft` and both connections are closed
+//! The host sends `Create` and gets back `Room { code }`; the guest sends `Join { code }`. Both then receive `PeerJoined` and
+//! from that point every peer message one sends is passed to the other. When either side leaves
+//! the other gets `PeerLeft` and both connections are closed.
+//!
+//! The relay speaks plain `ws://`. In front of it a web server (Caddy, the Hack Club Nest ingress, ...) adds TLS, so clients connect to a `wss://` address that
+//! passes school and office firewalls.
+//!
+//! Each connection has one thread that owns its socket. Threads never touch each other's sockets: they talk through channels,
+//! and each one checks its channel between short reads.
 
 use std::{
-    collections::HashMap,
-    io::{self, BufReader, BufWriter},
-    net::{IpAddr, Shutdown, TcpListener, TcpStream},
-    sync::{Arc, Mutex},
-    thread,
-    time::{Duration, Instant},
+    collections::HashMap, io, net::{IpAddr, TcpListener, TcpStream}, sync::{Arc, Mutex, mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError}}, thread, time::{Duration, Instant},
 };
 
-use crate::protocol::{self, Msg};
+use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
+
+use crate::protocol::{self, MAX_LINE, Msg};
 
 const CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ23456789";
 pub const CODE_LEN: usize = 6;
+/// How long a read waits before the thread looks at its channel. It is the most delay the relay adds to a message
+pub const POLL: Duration = Duration::from_millis(20);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Messages waiting for the other side. A client that fills it is sending far faster than anyone draws
+const QUEUE: usize = 1024;
 
 #[derive(Debug, Clone)]
 pub struct RelayConfig {
     pub max_rooms: usize,
     pub max_conns_per_ip: usize,
-    // Time a client has
+    // Time a client has to open the WebSocket and say what it wants
     pub handshake_timeout: Duration,
     // Time a room may wait for its guest
     pub room_ttl: Duration,
@@ -39,23 +47,40 @@ impl Default for RelayConfig {
     }
 }
 
-struct Waiting {
-    host: TcpStream,
-    since: Instant,
-    /// The host's per-IP slot travels with its socket, so it stays counted for as long as the connection lives, paired or not
-    _slot: IpSlot,
+/// What one connection's thread tells the other's
+enum Ctl {
+    /// A guest took the room: this is how to reach it
+    Paired(SyncSender<Ctl>),
+    Msg(Msg),
+    Left,
 }
 
 struct State {
     cfg: RelayConfig,
-    rooms: Mutex<HashMap<String, Waiting>>,
+    /// Open rooms, each with the channel of the host waiting in it
+    rooms: Mutex<HashMap<String, SyncSender<Ctl>>>,
     per_ip: Mutex<HashMap<IpAddr, usize>>,
 }
 
-// Decrements the per-IP counter when the connection's last handle drops
+// Decrements the per-IP counter when the connection ends
 struct IpSlot {
     state: Arc<State>,
     ip: IpAddr,
+}
+
+impl IpSlot {
+    fn take(state: &Arc<State>, ip: IpAddr) -> Option<Self> {
+        let mut map = lock(&state.per_ip);
+        let n = map.entry(ip).or_insert(0);
+        if *n >= state.cfg.max_conns_per_ip {
+            return None;
+        }
+        *n += 1;
+        Some(Self {
+            state: Arc::clone(state),
+            ip,
+        })
+    }
 }
 
 impl Drop for IpSlot {
@@ -66,8 +91,17 @@ impl Drop for IpSlot {
             if *n == 0 {
                 map.remove(&self.ip);
             }
-        } 
+        }
     }
+}
+
+type Ws = WebSocket<TcpStream>;
+
+/// WebSocket limits shared by the relay and the client: one message is at most one protocol line
+pub fn ws_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(MAX_LINE))
+        .max_frame_size(Some(MAX_LINE))
 }
 
 /// Serves forever on `listener`. Logs one line per event to stderr
@@ -77,15 +111,8 @@ pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
         rooms: Mutex::new(HashMap::new()),
         per_ip: Mutex::new(HashMap::new()),
     });
-    eprintln!("realy listening on {}", listener.local_addr()?);
 
-    let janitor = Arc::clone(&state);
-    thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_secs(5));
-            expire_rooms(&janitor);
-        }
-    });
+    eprintln!("relay listening on ws://{}", listener.local_addr()?);
 
     for conn in listener.incoming() {
         let stream = match conn {
@@ -96,24 +123,9 @@ pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
             }
         };
         let Ok(peer) = stream.peer_addr() else { continue };
-        let ip = peer.ip();
-        {
-            let mut map = lock(&state.per_ip);
-            let n = map.entry(ip).or_insert(0);
-            if *n >= state.cfg.max_conns_per_ip {
-                drop(map);
-                refuse(stream, "too many connections from your address");
-                continue;
-            }
-            *n += 1;
-        }
-        let slot = IpSlot {
-            state: Arc::clone(&state),
-            ip,
-        };
         let state = Arc::clone(&state);
         thread::spawn(move || {
-            if let Err(e) = handle(stream, &state, slot) {
+            if let Err(e) = handle(stream, &state) {
                 eprintln!("{peer}: {e}")
             }
         });
@@ -121,152 +133,208 @@ pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
     Ok(())
 }
 
-fn handle(stream: TcpStream, state: &Arc<State>, slot: IpSlot) -> io::Result<()> {
-    stream.set_nodelay(true)?;
-    stream.set_read_timeout(Some(state.cfg.handshake_timeout))?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut buf = Vec::new();
-    let first = protocol::read_msg(&mut reader, &mut buf)?;
-    stream.set_read_timeout(None)?;
+fn handle(stream: TcpStream, state: &Arc<State>) -> Result<(), String> {
+    let ip = stream.peer_addr().map_err(|e| e.to_string())?.ip();
+    stream.set_nodelay(true).map_err(|e| e.to_string())?;
+    stream.
+        set_read_timeout(Some(state.cfg.handshake_timeout))
+        .map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT)).map_err(|e| e.to_string())?;
+    let mut ws = tungstenite::accept_with_config(stream, Some(ws_config())).map_err(|e| format!("handshake: {e}"))?;
 
-    // A BufReader may already hold bytes the client sent right after its first line; we cannot hand those to antoher thread's
-    // fresh reader, so clients must wait for a reply before sending more (ours do)
-    if !reader.buffer().is_empty() {
-        refuse(stream, "send nothing before the relay answers");
+    let Some(slot) = IpSlot::take(state, ip) else {
+        refuse(&mut ws, "too many connections from your address");
         return Ok(());
-    }
-
+    };
+    let first = match read_one(&mut ws) {
+        Ok(m) => m,
+        Err(e) => {
+            refuse(&mut ws, "expected create or join");
+            return Err(e);
+        }
+    };
+    ws.get_ref().set_read_timeout(Some(POLL)).map_err(|e| e.to_string())?;
     match first {
-        Some(Msg::Create) => {
-            let code = {
-                let mut rooms = lock(&state.rooms);
-                if rooms.len() >= state.cfg.max_rooms {
-                    drop(rooms);
-                    refuse(stream, "the relay is full, try again later");
-                    return Ok(());
-                }
-                let code = loop {
-                    let c = new_code();
-                    if !rooms.contains_key(&c) {
-                        break c;
-                    }
-                };
-                stream.set_read_timeout(Some(Duration::from_millis(500)))?;
-                rooms.insert(
-                    code.clone(),
-                    Waiting {
-                        host: stream.try_clone()?,
-                        since: Instant::now(),
-                        _slot: slot,
-                    },
-                );
-                code
-            };
-            protocol::write_msg(&mut &stream, &Msg::Room { code: code.clone() })?;
-            eprintln!("room {code} created");
-            wait_until_closed(&stream, state, &code);
-            Ok(())
-        }
-        Some(Msg::Join { code }) => {
-            let code = code.trim().to_ascii_uppercase();
-            let host = lock(&state.rooms).remove(&code);
-            let Some(Waiting { 
-                host, _slot: host_slot, .. }) = host else {
-                refuse(stream, "no room with that code (it may have expired)");
-                return Ok(());
-            };
-            eprintln!("room {code} paired");
-            pair(host, stream)?;
-            eprintln!("room {code} closed");
-            drop((slot, host_slot));
-            Ok(())
-        }
-        Some(_) => {
-            refuse(stream, "expected creat or join");
-            Ok(())
-        }
-        None => Ok(()),
+        Msg::Create => host(ws, state),
+        Msg::Join { code } => guest(ws, state, &code),
+        _ => refuse(&mut ws, "expected create or join"),
     }
-}
-
-/// Parks the host's handler thrad while its room is open, so the room disappears if the host hangs up before a guest arrives.
-/// The socket's read timeout must already be short (see `handle`): it is set before the room is published so it can never overwrite
-/// the `None` that `pair` sets
-fn wait_until_closed(stream: &TcpStream, state: &State, code: &str) {
-    let mut probe = [0u8; 1];
-    while lock(&state.rooms).contains_key(code) {
-        match stream.peek(&mut probe) {
-            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => continue,
-            Ok(0) | Err(_) => {
-                if lock(&state.rooms).remove(code).is_some() {
-                    eprintln!("room {code} abandoned");
-                }
-            }
-            Ok(_) => {
-                // Data before pairing breaks protocol; after pairing it is the pipe's business and the room is already gone
-                if let Some(w) = lock(&state.rooms).remove(code) {
-                    refuse(w.host, "send nothing before your guest joins");
-                }
-            }
-        }
-        return;
-    }
-}
-
-fn pair(host: TcpStream, guest: TcpStream) -> io::Result<()> {
-    host.set_read_timeout(None)?;
-    for s in [&host, &guest] {
-        protocol::write_msg(&mut &*s, &Msg::PeerJoined)?;
-    }
-    let (h2, g2) = (host.try_clone()?, guest.try_clone()?);
-    let forward = thread::spawn(move || pipe(h2, g2));
-    pipe(guest, host);
-    let _ = forward.join();
+    drop(slot);
     Ok(())
 }
 
-/// Forwards peer messages from `src` to `dst` until either side fails, then tells `dst` its peer left and shuts
-/// both sockets down
-fn pipe(src: TcpStream, dst: TcpStream) {
-    let mut reader = BufReader::new(&src);
-    let mut writer = BufWriter::new(&dst);
-    let mut buf = Vec::new();
-    while let Ok(Some(msg)) = protocol::read_msg(&mut reader, &mut buf) {
-        if !msg.is_peer_msg() {
-            continue;
-        }
-        if protocol::write_msg(&mut writer, &msg).is_err() {
-            break;
-        }
-    }
-    let _ = protocol::write_msg(&mut writer, &Msg::PeerLeft);
-    let _ = src.shutdown(Shutdown::Both);
-    let _ = dst.shutdown(Shutdown::Both);
-}
-
-fn expire_rooms(state: &State) {
-    let ttl = state.cfg.room_ttl;
-    let expired: Vec<(String, Waiting)> = {
+/// Opens a room and stays in it: first waiting for a guest, then paired with it
+fn host(mut ws: Ws, state: &State) {
+    let (tx, inbox) = mpsc::sync_channel(QUEUE);
+    let code = {
         let mut rooms = lock(&state.rooms);
-        let codes: Vec<String> = rooms
-            .iter()
-            .filter(|(_, w)| w.since.elapsed() > ttl)
-            .map(|(c, _)| c.clone())
-            .collect();
-        codes
-            .into_iter()
-            .filter_map(|c| rooms.remove(&c).map(|w| (c, w)))
-            .collect()
+        if rooms.len() >= state.cfg.max_rooms {
+            drop(rooms);
+            refuse(&mut ws, "the relay is full, try again later");
+            return;
+        }
+        let code = loop {
+            let c = new_code();
+            if !rooms.contains_key(&c) {
+                break c;
+            }
+        };
+        rooms.insert(code.clone(), tx);
+        code
     };
-    for (code, w) in expired {
-        eprintln!("room {code} expired");
-        refuse(w.host, "nobody joined in time, room closed")
+    eprintln!("room {code} created");
+    if send(&mut ws, &Msg::Room { code: code.clone() }).is_ok() {
+        session(&mut ws, &inbox, None, Some(&code), state);
+    }
+
+    // Still listed only if nobody joined: a guest removes the room when it takes it
+    if lock(&state.rooms).remove(&code).is_some() {
+        eprintln!("room {code} abandoned");
+    }
+    let _ = ws.close(None);
+    let _ = ws.flush();
+}
+
+fn guest(mut ws: Ws, state: &State, code: &str) {
+    let code = code.trim().to_ascii_uppercase();
+    let Some(host) = lock(&state.rooms).remove(&code) else {
+        refuse(&mut ws, "no room with that code (it may have expired)");
+        return;
+    };
+    let (tx, inbox) = mpsc::sync_channel(QUEUE);
+    if host.send(Ctl::Paired(tx)).is_err() {
+        refuse(&mut ws, "the host just left");
+        return;
+    }
+    eprintln!("room {code} paired");
+    if send(&mut ws, &Msg::PeerJoined).is_ok() {
+        session(&mut ws, &inbox, Some(host), None, state);
+    }
+    eprintln!("room {code} closed");
+    let _ = ws.close(None);
+    let _ = ws.flush();
+}
+
+
+/// Runs one side of a room until it ends. `waiting` is the room code while the host has no guest yet
+fn session(ws: &mut Ws, inbox: &Receiver<Ctl>, mut peer: Option<SyncSender<Ctl>>, waiting: Option<&str>, state: &State) {
+    let mut waiting = waiting;
+    let opened = Instant::now();
+    'session: loop {
+        // What our client sent
+        match ws.read() {
+            Ok(Message::Text(text)) => {
+                let Ok(msg) = protocol::decode(text.as_str()) else {
+                    refuse(ws, "that is not a blackboard message");
+                    break;
+                };
+                // A peer can never fake a control message
+                if !msg.is_peer_msg() {
+                    continue;
+                }
+                let Some(p) = &peer else {
+                    refuse(ws, "send nothing before your guest joins");
+                    break;
+                };
+                match p.try_send(Ctl::Msg(msg)) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        refuse(ws, "you are sending too fast");
+                        break;
+                    }
+                    Err(TrySendError::Disconnected(_)) => break,
+                }
+            }
+            Ok(Message::Binary(_)) => {
+                refuse(ws, "that is not a blackboard message");
+                break;
+            }
+            Ok(Message::Close(_)) => break,
+            // Pings are answered by tungstenite on the next read or write
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e)) if would_block(&e) => {}
+            Err(_) => break,
+        }
+
+        // What the other side sent us
+        loop {
+            match inbox.try_recv() {
+                Ok(Ctl::Paired(tx)) => {
+                    peer = Some(tx);
+                    waiting = None;
+                    if send(ws, &Msg::PeerJoined).is_err() {
+                        break 'session;
+                    }
+                }
+                Ok(Ctl::Msg(m)) => {
+                    if send(ws, &m).is_err() {
+                        break 'session;
+                    }
+                }
+                Ok(Ctl::Left) => {
+                    let _ = send(ws, &Msg::PeerLeft);
+                    // The peer is gone: nothing to tell it on the way out
+                    peer = None;
+                    break 'session;
+                }
+                Err(TryRecvError::Empty) => break,
+                // The host's channel died with a guest's `Paired` still in it, or the other thread ended without a word
+                Err(TryRecvError::Disconnected) => {
+                    if peer.is_some() {
+                        let _ = send(ws, &Msg::PeerLeft);
+                    }
+                    peer = None;
+                    break 'session;
+                }
+            }
+        }
+        if let Some(code) = waiting
+            && opened.elapsed() > state.cfg.room_ttl
+        {
+            // If the room is gone a guest has just taken it, and its `Paired` is on the way
+            if lock(&state.rooms).remove(code).is_some() {
+                eprintln!("room {code} expired");
+                refuse(ws, "nobody joined in time, room closed");
+                break;
+            }
+        }
+    }
+    if let Some(p) = peer {
+        let _ = p.send(Ctl::Left);
     }
 }
 
-fn refuse(stream: TcpStream, reason: &str) {
-    let _ = protocol::write_msg(&mut &stream, &Msg::Error { reason: reason.into() });
-    let _ = stream.shutdown(Shutdown::Both);
+/// Reads the first message, waiting up to the handshake timeout set on the socket
+fn read_one(ws: &mut Ws) -> Result<Msg, String> {
+    loop {
+        match ws.read() {
+            Ok(Message::Text(text)) => return protocol::decode(text.as_str()).map_err(|e| e.to_string()),
+            Ok(Message::Ping(_) | Message::Pong(_)) => continue,
+            Ok(_) => return Err("expected a text message".into()),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+fn send(ws: &mut Ws, msg: &Msg) -> tungstenite::Result<()> {
+    ws.send(Message::text(protocol::encode(msg)))
+}
+
+fn refuse(ws: &mut Ws, reason: &str) {
+    let _ = send(ws, &Msg::Error { reason: reason.into() });
+    let _ = ws.close(None);
+    let _ = ws.flush();
+}
+
+/// A read that ran into the socket timeout. Unix says `WouldBlock`, Windows `TimedOut`
+pub fn would_block(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+}
+
+/// True when `s` looks like a room code (any case), not like a host name or address
+pub fn is_room_code(s: &str) -> bool {
+    let s = s.trim();
+    s.len() == CODE_LEN && s.bytes().all(|b| CODE_ALPHABET.contains(&b.to_ascii_uppercase()))
 }
 
 fn new_code() -> String {
@@ -289,6 +357,10 @@ mod tests {
             let c = new_code();
             assert_eq!(c.len(), CODE_LEN);
             assert!(c.bytes().all(|b| CODE_ALPHABET.contains(&b)));
+            assert!(is_room_code(&c) && is_room_code(&c.to_lowercase()));
         }
+        assert!(!is_room_code("192.168.1.2"));
+        assert!(!is_room_code("ABC12"), "1 is not in the alphabet");
+        assert!(!is_room_code("host:7878"));
     }
 }

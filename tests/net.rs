@@ -2,7 +2,7 @@
 
 use core::panic;
 use std::{
-    io::{BufReader, ErrorKind, Write},
+    io::{ErrorKind, Read, Write},
     net::{TcpListener, TcpStream},
     thread,
     time::{Duration, Instant},
@@ -14,14 +14,15 @@ use blackboard::{
     protocol::{self, Msg},
     relay::{self, RelayConfig},
 };
+use tungstenite::Message;
 
 const WAIT: Duration = Duration::from_secs(3);
 
 fn start_relay(cfg: RelayConfig) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    let addr = listener.local_addr().unwrap();
     thread::spawn(move || relay::serve(listener, cfg));
-    addr
+    format!("ws://{addr}")
 }
 
 /// Next message event, skipping nothing; panics on timeout
@@ -164,9 +165,69 @@ fn relay_rejects_unknown_codes_and_codes_are_single_use() {
 #[test]
 fn relay_refuses_bad_handshakes() {
     let relay = start_relay(RelayConfig::default());
-    let stream = TcpStream::connect(&relay).unwrap();
-    protocol::write_msg(&mut &stream, &Msg::Chat { text: "hi".into() }).unwrap();
-    let mut reader = BufReader::new(&stream);
-    let reply = protocol::read_msg(&mut reader, &mut Vec::new()).unwrap();
-    assert!(matches!(reply, Some(Msg::Error { .. })));
+    let (mut ws, _) = tungstenite::connect(&relay).unwrap();
+    ws.send(Message::text(protocol::encode(&Msg::Chat { text: "hi".into() }))).unwrap();
+    let reply = ws.read().unwrap();
+    assert!(matches!(protocol::decode(reply.to_text().unwrap()), Ok(Msg::Error { .. })));
+
+    // Something that is not a WebSocket at all is just dropped
+    let addr = relay.trim_start_matches("ws://");
+    let mut raw = TcpStream::connect(addr).unwrap();
+    raw.set_read_timeout(Some(WAIT)).unwrap();
+    raw.write_all(b"{\"t\":\"create\"}\n\n").unwrap();
+    let mut reply = Vec::new();
+    let _ = raw.read_to_end(&mut reply);
+    assert!(!String::from_utf8_lossy(&reply).contains("room"));
+}
+
+#[test]
+fn relay_refuses_traffic_before_the_guest_joins() {
+    let relay = start_relay(RelayConfig::default());
+    let host = Link::relay_host(&relay).unwrap();
+    room_code(&host);
+    assert!(host.send(&Msg::Clear));
+    assert!(matches!(expect_msg(&host), Msg::Error { .. }));
+    assert!(matches!(next(&host), NetEvent::Closed(_)));
+}
+
+#[test]
+fn relay_rooms_expire() {
+    let relay = start_relay(RelayConfig {
+        room_ttl: Duration::from_millis(200),
+        ..RelayConfig::default()
+    });
+    let host = Link::relay_host(&relay).unwrap();
+    let code = room_code(&host);
+    match expect_msg(&host) {
+        Msg::Error { reason } => assert!(reason.contains("nobody joined")),
+        other => panic!("expected the room to expire, got {other:?}"),
+    }
+    let late = Link::relay_join(&relay, &code).unwrap();
+    assert!(matches!(expect_msg(&late), Msg::Error { .. }));
+}
+
+#[test]
+fn relay_limits_connections_per_address() {
+    let relay = start_relay(RelayConfig {
+        max_conns_per_ip: 1,
+        ..RelayConfig::default()
+    });
+    let first = Link::relay_host(&relay).unwrap();
+    room_code(&first);
+    let second = Link::relay_host(&relay).unwrap();
+    match expect_msg(&second) {
+        Msg::Error { reason } => assert!(reason.contains("too many")),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // When the first one leaves its slot is free again
+    drop(first);
+    let start = Instant::now();
+    loop {
+        let again = Link::relay_host(&relay).unwrap();
+        if matches!(expect_msg(&again), Msg::Room { .. }) {
+            break;
+        }
+        assert!(start.elapsed() < WAIT, "the slot was never released");
+        thread::sleep(Duration::from_millis(50));
+    }
 }
