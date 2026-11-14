@@ -160,6 +160,8 @@ fn handle(stream: TcpStream, state: &Arc<State>) -> Result<(), String> {
     let ip = client_ip(peer, forwarded.as_deref(), &state.cfg.trusted_proxies);
 
     let Some(slot) = IpSlot::take(state, ip) else {
+        // With a proxy in front, the proxy's address here means --trust-proxy is missing or wrong
+        eprintln!("refused {ip} (via {peer}): too many connections")
         refuse(&mut ws, "too many connections from your address");
         return Ok(());
     };

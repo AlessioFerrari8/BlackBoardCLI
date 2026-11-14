@@ -1,0 +1,13 @@
+# Relay on a server behind a web server that adds TLS 
+# The image is built elsewhere and loaded with `docker load`, so nothing is compiled here
+services:
+  relay:
+    image: blackboard-relay:latest
+    restart: unless-stopped
+    # The proxy's address, as the relay sees it, goes in TRUST_PROXY
+    command: ["--port", "7879", "--trust-proxy", "${TRUST_PROXY:-10.60.1.2}"]
+    ports:
+      - "${RELAY_PORT:-7879}:7879"
+    read_only: true
+    can_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
