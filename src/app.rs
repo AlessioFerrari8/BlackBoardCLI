@@ -247,7 +247,7 @@ impl App {
                     b.add_glyphs(&glyphs);
                     self.board = b;
                     self.forget_undo();
-                } 
+                }
                 None => self.system("error: received a board that does not fit, ignored it"),
             },
             Msg::Create | Msg::Join { .. } => {}
@@ -341,14 +341,14 @@ impl App {
         self.anchor = None;
         self.stop_typing();
     }
-    
+
     /// Space or x on the keyboard: the pen paints right away, a shape takes two presses, one per end, text starts writing
     fn press(&mut self, color: u8) {
         match (self.tool, self.anchor.take()) {
             (Tool::Pen, _) => self.stroke(color, &[self.cursor]),
             (Tool::Text, _) => self.start_typing(self.cursor),
             (_, Some((start, color))) => self.finish_shape(start, color),
-            (_, None) => self.anchor = Some((self.cursor, color)),   
+            (_, None) => self.anchor = Some((self.cursor, color)),
         }
     }
 
@@ -406,10 +406,10 @@ impl App {
                 self.record(&[[x, y]], |b| {
                     b.write(color, x, y, &c.to_string());
                 });
-                self.emit(Msg::Text { 
-                    color, 
-                    x, 
-                    y, 
+                self.emit(Msg::Text {
+                    color,
+                    x,
+                    y,
                     text: c.to_string(),
                 });
                 self.move_cursor((x + 1).min(WIDTH - 1), y);
@@ -477,13 +477,15 @@ impl App {
                     self.close_stroke();
                 }
                 // A shape ends where the mouse was released, or at the last cell of the board it was dragged over
-                if self.drag.take().is_some() && let Some((start, color)) = self.anchor.take() {
+                if self.drag.take().is_some()
+                    && let Some((start, color)) = self.anchor.take()
+                {
                     if let Some(p) = cell {
                         self.cursor = p;
                     }
                     self.finish_shape(start, color);
                 }
-            } 
+            }
             MouseEventKind::Moved => {
                 if let Some(p) = cell {
                     self.send_cursor(p);
@@ -519,7 +521,7 @@ impl App {
         }
     }
 
-    /// Applies `change` to the board and remembers what it did to `cells`, for undo. Outisde an open stroke the change is 
+    /// Applies `change` to the board and remembers what it did to `cells`, for undo. Outisde an open stroke the change is
     /// a stroke of its own
     fn record(&mut self, cells: &[[u16; 2]], change: impl FnOnce(&mut Board)) {
         let before: Vec<Cell> = cells.iter().map(|&[x, y]| self.board.cell(x, y)).collect();
@@ -547,7 +549,7 @@ impl App {
             self.undo.remove(0);
         }
     }
-    
+
     fn forget_undo(&mut self) {
         self.open = None;
         self.undo.clear();
@@ -571,10 +573,10 @@ impl App {
             }
             self.board.set(x, y, before);
             match before.glyph {
-                Some(c) => letters.push(Msg::Text { 
-                    color: before.color, 
-                    x, 
-                    y, 
+                Some(c) => letters.push(Msg::Text {
+                    color: before.color,
+                    x,
+                    y,
                     text: c.to_string(),
                 }),
                 None => by_color.entry(before.color).or_default().push([x, y]),
@@ -584,14 +586,16 @@ impl App {
         colors.sort_unstable_by_key(|(c, _)| *c);
         for (color, points) in colors {
             for chunk in points.chunks(MAX_POINTS) {
-                self.emit(Msg::Draw { color, points: chunk.to_vec(), });
+                self.emit(Msg::Draw {
+                    color,
+                    points: chunk.to_vec(),
+                });
             }
         }
         for msg in letters {
             self.emit(msg);
         }
     }
-
 
     fn send_cursor(&mut self, p: (u16, u16)) {
         if self.last_sent_cursor != Some(p) && self.emit(Msg::Cursor { x: p.0, y: p.1 }) {

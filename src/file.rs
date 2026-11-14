@@ -1,7 +1,11 @@
 //! Saving a board to disk and opening it again. A save writes two files side by side: `board-N.board`, which `blackbaord
 //! host --open` reads back, and `board-N.txt`, the same drawing as plain text, to paste anywhere you like
 
-use std::{fs::{self, OpenOptions}, io::{self, Write}, path::{Path, PathBuf}};
+use std::{
+    fs::{self, OpenOptions},
+    io::{self, Write},
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -17,7 +21,7 @@ const MAX_FILE: u64 = 1024 * 1024;
 struct SavedBoard {
     format: String,
     version: u32,
-    w: u16, 
+    w: u16,
     h: u16,
     runs: Vec<[u16; 2]>,
     #[serde(default)]
@@ -53,25 +57,32 @@ pub fn save(board: &Board, dir: &Path) -> Result<(PathBuf, PathBuf)> {
 
 /// Opens a file writte by [`save`]
 pub fn load(path: &Path) -> Result<Board> {
-    let size = fs::metadata(path).with_context(|| format!("cannot open {}", path.display()))?.len();
+    let size = fs::metadata(path)
+        .with_context(|| format!("cannot open {}", path.display()))?
+        .len();
     if size > MAX_FILE {
         bail!("{} is too big to be a board", path.display());
     }
     let data = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let saved: SavedBoard = serde_json::from_slice(&data).with_context(|| format!("{} is not a board file", path.display()))?;
+    let saved: SavedBoard =
+        serde_json::from_slice(&data).with_context(|| format!("{} is not a board file", path.display()))?;
     if saved.format != FORMAT || saved.version != FORMAT_VERSION {
         bail!("{} is not a board file this version can open", path.display());
     }
-    let mut board = Board::from_runs(saved.w, saved.h, &saved.runs).with_context(|| format!("{} holds a board 
-        of the wrong size or a broken one", path.display()))?;
+    let mut board = Board::from_runs(saved.w, saved.h, &saved.runs).with_context(|| {
+        format!(
+            "{} holds a board 
+        of the wrong size or a broken one",
+            path.display()
+        )
+    })?;
     board.add_glyphs(&saved.glyphs);
     Ok(board)
 }
 
-
 /// The board as text: letters as they are, chalk as `█`, nothing as a space. Trailing blanks are cut
 pub fn to_text(board: &Board) -> String {
-    let mut rows: Vec<String> = (0..HEIGHT) 
+    let mut rows: Vec<String> = (0..HEIGHT)
         .map(|y| {
             let row: String = (0..WIDTH)
                 .map(|x| {
@@ -95,6 +106,4 @@ pub fn to_text(board: &Board) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-
-}
+mod tests {}

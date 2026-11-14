@@ -1,5 +1,8 @@
 use std::{
-    io::stdout, net::{IpAddr, TcpListener, UdpSocket}, path::{Path, PathBuf}, time::Duration,
+    io::stdout,
+    net::{IpAddr, TcpListener, UdpSocket},
+    path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -77,7 +80,7 @@ enum Command {
         /// Address of a proxy in front of the relay (like the web server adding TLS): for its connections the cleint address
         /// comes from X-Forwarded-For. Can be given more than once
         #[arg(long)]
-        trust_proxy: Vec<IpAddr>
+        trust_proxy: Vec<IpAddr>,
     },
 }
 
@@ -90,12 +93,12 @@ struct Common {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Relay { 
-            port, 
-            bind, 
-            max_rooms, 
+        Command::Relay {
+            port,
+            bind,
+            max_rooms,
             max_per_ip,
-            trust_proxy 
+            trust_proxy,
         } => {
             let listener =
                 TcpListener::bind((bind, port)).with_context(|| format!("cannot listen on {bind}:{port}"))?;
@@ -113,7 +116,7 @@ fn main() -> Result<()> {
             bind,
             open,
             relay,
-            common
+            common,
         } => {
             let mut app = App::new(Role::Host, &name_or_default(common.name));
             if let Some(path) = open {

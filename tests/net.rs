@@ -166,9 +166,13 @@ fn relay_rejects_unknown_codes_and_codes_are_single_use() {
 fn relay_refuses_bad_handshakes() {
     let relay = start_relay(RelayConfig::default());
     let (mut ws, _) = tungstenite::connect(&relay).unwrap();
-    ws.send(Message::text(protocol::encode(&Msg::Chat { text: "hi".into() }))).unwrap();
+    ws.send(Message::text(protocol::encode(&Msg::Chat { text: "hi".into() })))
+        .unwrap();
     let reply = ws.read().unwrap();
-    assert!(matches!(protocol::decode(reply.to_text().unwrap()), Ok(Msg::Error { .. })));
+    assert!(matches!(
+        protocol::decode(reply.to_text().unwrap()),
+        Ok(Msg::Error { .. })
+    ));
 
     // Something that is not a WebSocket at all is just dropped
     let addr = relay.trim_start_matches("ws://");
@@ -208,8 +212,8 @@ fn relay_rooms_expire() {
 
 #[test]
 fn relay_counts_clients_behind_a_trusted_proxy_apart() {
-    let relay = start_relay(RelayConfig { 
-        max_conns_per_ip: 1, 
+    let relay = start_relay(RelayConfig {
+        max_conns_per_ip: 1,
         trusted_proxies: vec!["127.0.0.1".parse().unwrap()],
         ..RelayConfig::default()
     });

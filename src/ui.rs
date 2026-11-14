@@ -123,14 +123,18 @@ impl Widget for BoardView<'_> {
                 };
                 match c.glyph {
                     Some(g) => {
-                        let style = Style::new().fg(color_of(c.color)).bg(SLATE).add_modifier(Modifier::BOLD);
+                        let style = Style::new()
+                            .fg(color_of(c.color))
+                            .bg(SLATE)
+                            .add_modifier(Modifier::BOLD);
                         cell.set_char(g).set_style(style);
                     }
                     None if c.color == EMPTY => {
                         cell.set_symbol(" ").set_style(Style::new().bg(SLATE));
                     }
                     None => {
-                        cell.set_symbol("█").set_style(Style::new().fg(color_of(c.color)).bg(SLATE));
+                        cell.set_symbol("█")
+                            .set_style(Style::new().fg(color_of(c.color)).bg(SLATE));
                     }
                 }
             }
@@ -150,9 +154,16 @@ impl Widget for BoardView<'_> {
         }
         // The shape being drawn, before it is committed
         if let Some((color, points)) = app.preview() {
-            let (symbol, fg) = if color == EMPTY { ("░", Color::Gray) } else { ("▓", color_of(color)) };
+            let (symbol, fg) = if color == EMPTY {
+                ("░", Color::Gray)
+            } else {
+                ("▓", color_of(color))
+            };
             for [x, y] in points {
-                if x < area.width && y < area.height && let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
+                if x < area.width
+                    && y < area.height
+                    && let Some(cell) = buf.cell_mut((area.x + x, area.y + y))
+                {
                     cell.set_symbol(symbol).set_style(Style::new().fg(fg).bg(SLATE));
                 }
             }
@@ -276,7 +287,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" ● ", dot),
         Span::raw(format!("{state} ")),
         swatch,
-        Span::raw(format!(" {} · {} · brush {} ", color_name(app.color), app.tool.name(), app.brush)),
+        Span::raw(format!(
+            " {} · {} · brush {} ",
+            color_name(app.color),
+            app.tool.name(),
+            app.brush
+        )),
         Span::styled(keys, Style::new().fg(Color::DarkGray)),
     ]);
     frame.render_widget(line, area);

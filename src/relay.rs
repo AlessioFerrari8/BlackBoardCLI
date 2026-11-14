@@ -11,10 +11,22 @@
 //! and each one checks its channel between short reads.
 
 use std::{
-    collections::HashMap, io, net::{IpAddr, TcpListener, TcpStream}, sync::{Arc, Mutex, mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError}}, thread, time::{Duration, Instant},
+    collections::HashMap,
+    io,
+    net::{IpAddr, TcpListener, TcpStream},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
-use tungstenite::{Message, WebSocket, handshake::client::{Request, Response}, protocol::WebSocketConfig};
+use tungstenite::{
+    Message, WebSocket,
+    handshake::client::{Request, Response},
+    protocol::WebSocketConfig,
+};
 
 use crate::protocol::{self, MAX_LINE, Msg};
 
@@ -140,10 +152,12 @@ pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
 fn handle(stream: TcpStream, state: &Arc<State>) -> Result<(), String> {
     let peer = stream.peer_addr().map_err(|e| e.to_string())?.ip();
     stream.set_nodelay(true).map_err(|e| e.to_string())?;
-    stream.
-        set_read_timeout(Some(state.cfg.handshake_timeout))
+    stream
+        .set_read_timeout(Some(state.cfg.handshake_timeout))
         .map_err(|e| e.to_string())?;
-    stream.set_write_timeout(Some(WRITE_TIMEOUT)).map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(WRITE_TIMEOUT))
+        .map_err(|e| e.to_string())?;
     let mut forwarded = None;
     // The error type is tungstenite's, we never return it
     #[allow(clippy::result_large_err)]
@@ -161,7 +175,7 @@ fn handle(stream: TcpStream, state: &Arc<State>) -> Result<(), String> {
 
     let Some(slot) = IpSlot::take(state, ip) else {
         // With a proxy in front, the proxy's address here means --trust-proxy is missing or wrong
-        eprintln!("refused {ip} (via {peer}): too many connections")
+        eprintln!("refused {ip} (via {peer}): too many connections");
         refuse(&mut ws, "too many connections from your address");
         return Ok(());
     };
@@ -234,9 +248,14 @@ fn guest(mut ws: Ws, state: &State, code: &str) {
     let _ = ws.flush();
 }
 
-
 /// Runs one side of a room until it ends. `waiting` is the room code while the host has no guest yet
-fn session(ws: &mut Ws, inbox: &Receiver<Ctl>, mut peer: Option<SyncSender<Ctl>>, waiting: Option<&str>, state: &State) {
+fn session(
+    ws: &mut Ws,
+    inbox: &Receiver<Ctl>,
+    mut peer: Option<SyncSender<Ctl>>,
+    waiting: Option<&str>,
+    state: &State,
+) {
     let mut waiting = waiting;
     let opened = Instant::now();
     'session: loop {
@@ -329,7 +348,7 @@ pub fn client_ip(peer: IpAddr, forwarded: Option<&str>, trusted: &[IpAddr]) -> I
     if !trusted.contains(&peer) {
         return peer;
     }
-    forwarded   
+    forwarded
         .and_then(|f| f.rsplit(',').next())
         .and_then(|ip| ip.trim().parse().ok())
         .unwrap_or(peer)
@@ -400,7 +419,10 @@ mod tests {
         let proxy: IpAddr = "10.60.1.2".parse().unwrap();
         let other: IpAddr = "203.0.113.9".parse().unwrap();
         let header = Some("1.1.1.1, 192.51.100.7");
-        assert_eq!(client_ip(proxy, header, &[proxy]), "192.51.100.7".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            client_ip(proxy, header, &[proxy]),
+            "192.51.100.7".parse::<IpAddr>().unwrap()
+        );
         assert_eq!(client_ip(other, header, &[proxy]), other, "anyone can write the header");
         assert_eq!(client_ip(proxy, None, &[proxy]), proxy);
         assert_eq!(client_ip(proxy, Some("garbage"), &[proxy]), proxy);

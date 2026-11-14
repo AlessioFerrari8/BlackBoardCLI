@@ -25,18 +25,34 @@ pub const MAX_CHAT: usize = 280;
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Msg {
     // p2p
-    Hello { name: String, proto: u32 },
+    Hello {
+        name: String,
+        proto: u32,
+    },
     // Paint `points` with `color`; color 0 erases
-    Draw { color: u8, points: Vec<[u16; 2]> },
+    Draw {
+        color: u8,
+        points: Vec<[u16; 2]>,
+    },
     Clear,
-    Chat { text: String },
-    Cursor { x: u16, y: u16 },
+    Chat {
+        text: String,
+    },
+    Cursor {
+        x: u16,
+        y: u16,
+    },
     // Write `text` from (x, y) to the right, one letter per cell
-    Text { color: u8, x: u16, y: u16, text: String },
+    Text {
+        color: u8,
+        x: u16,
+        y: u16,
+        text: String,
+    },
     // Whole board, run-length encoded as `[color, run]` pairs in row-major order, plus the letters on it
-    Snapshot { 
-        w: u16, 
-        h: u16, 
+    Snapshot {
+        w: u16,
+        h: u16,
         runs: Vec<[u16; 2]>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         glyphs: Vec<Glyph>,
@@ -44,13 +60,19 @@ pub enum Msg {
 
     // Client to relay
     Create,
-    Join { code: String },
+    Join {
+        code: String,
+    },
 
     // Relay to client (also synthesised locally in direct mode)
-    Room { code: String },
+    Room {
+        code: String,
+    },
     PeerJoined,
     PeerLeft,
-    Error { reason: String },
+    Error {
+        reason: String,
+    },
 }
 
 impl Msg {
@@ -174,7 +196,7 @@ mod tests {
             Msg::Clear,
             Msg::Chat { text: "ciao".into() },
             Msg::Cursor { x: 5, y: 6 },
-            Msg::Text { 
+            Msg::Text {
                 color: 2,
                 x: 1,
                 y: 1,

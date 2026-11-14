@@ -1,5 +1,8 @@
 //! The shared drawing surface: a fixed grid of color indices
 
+use serde::{Deserialize, Serialize};
+use unicode_width::UnicodeWidthChar;
+
 // Board size in cells
 pub const WIDTH: u16 = 80;
 pub const HEIGHT: u16 = 24;
@@ -8,9 +11,25 @@ pub const HEIGHT: u16 = 24;
 pub const PALETTE_LEN: u8 = 8;
 pub const EMPTY: u8 = 0;
 
+/// What one cell shows: a chalk color, and a letter written in that color instead of a full block
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Cell {
+    pub color: u8,
+    pub glyph: Option<char>,
+}
+
+/// A letter on the board, as it travels in snapshots and save files
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Glyph {
+    pub x: u16,
+    pub y: u16,
+    pub c: char,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Board {
     cells: Vec<u8>,
+    glyphs: Vec<Option<char>>,
 }
 
 impl Default for Board {
@@ -23,6 +42,7 @@ impl Board {
     pub fn new() -> Self {
         Self {
             cells: vec![EMPTY; WIDTH as usize * HEIGHT as usize],
+            glyphs: vec![None; WIDTH as usize * HEIGHT as usize],
         }
     }
 
@@ -38,7 +58,29 @@ impl Board {
         }
     }
 
+    pub fn cell(&self, x: u16, y: u16) -> Cell {
+        if !Self::in_bounds(x, y) {
+            return Cell::default();
+        }
+        let i = Self::index(x, y);
+        Cell {
+            color: self.cells[i],
+            glyph: self.glyphs[i],
+        }
+    }
+
+    /// Puts `cell` back as it is. Used by undo, so it takes the same checks as the network input
+    pub fn set(&mut self, x: u16, y: u16, cell: Cell) {
+        if !Self::in_bounds(x, y) || cell.color > PALETTE_LEN {
+            return;
+        }
+        let i = Self::index(x, y);
+        self.cells[i] = cell.color;
+        self.glyphs[i] = cell.glyph.filter(|&c| cell.color != EMPTY && is_glyph(c));
+    }
+
     /// Paints the given points. Out-of-range points and colors are ignored, because they may come straight from the network
+    /// A painted cell loses its letter
     pub fn paint(&mut self, color: u8, points: &[[u16; 2]]) {
         if color > PALETTE_LEN {
             return;
@@ -46,13 +88,62 @@ impl Board {
 
         for &[x, y] in points {
             if Self::in_bounds(x, y) {
-                self.cells[Self::index(x, y)] = color;
+                let i = Self::index(x, y);
+                self.cells[i] = color;
+                self.glyphs[i] = None;
             }
         }
     }
 
+    /// Writes `text` from `(x, y)` to the right, one letter per cell, and stops at the edge. Letters that do not fit in one cell
+    /// are skipped. Returns how many cells were written
+    pub fn write(&mut self, color: u8, x: u16, y: u16, text: &str) -> u16 {
+        if color == EMPTY || color > PALETTE_LEN || !Self::in_bounds(x, y) {
+            return 0;
+        }
+        let mut n = 0;
+        for c in text.chars().filter(|&c| is_glyph(c)) {
+            if x + n >= WIDTH {
+                break;
+            }
+            let i = Self::index(x + n, y);
+            self.cells[i] = color;
+            self.glyphs[i] = Some(c);
+            n += 1;
+        }
+        n
+    }
+
     pub fn clear(&mut self) {
         self.cells.fill(EMPTY);
+        self.glyphs.fill(None);
+    }
+
+    /// Every letter on the board, row-major
+    pub fn glyph_list(&self) -> Vec<Glyph> {
+        self.glyphs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, g)| {
+                g.map(|c| Glyph {
+                    x: (i % WIDTH as usize) as u16,
+                    y: (i / WIDTH as usize) as u16,
+                    c,
+                })
+            })
+            .collect()
+    }
+
+    /// Puts a letter from a snapshot back. Letters on empty cells, outside the board or wider than one cell are dropped
+    pub fn add_glyphs(&mut self, glyphs: &[Glyph]) {
+        for g in glyphs {
+            if Self::in_bounds(g.x, g.y) && is_glyph(g.c) {
+                let i = Self::index(g.x, g.y);
+                if self.cells[i] != EMPTY {
+                    self.glyphs[i] = Some(g.c);
+                }
+            }
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -85,7 +176,10 @@ impl Board {
             }
             cells.extend(std::iter::repeat_n(color as u8, run as usize));
         }
-        (cells.len() == total).then_some(Self { cells })
+        (cells.len() == total).then_some(Self {
+            cells,
+            glyphs: vec![None; total],
+        })
     }
 
     fn index(x: u16, y: u16) -> usize {
@@ -118,6 +212,26 @@ pub fn line(a: (u16, u16), b: (u16, u16)) -> Vec<(u16, u16)> {
             y0 += sy;
         }
     }
+}
+
+/// Outline of the rectangle with corners `a` and `b`, each cell once
+pub fn rect(a: (u16, u16), b: (u16, u16)) -> Vec<(u16, u16)> {
+    let (x0, x1) = (a.0.min(b.0), a.0.max(b.0));
+    let (y0, y1) = (a.1.min(b.1), a.1.max(b.1));
+    let mut out = Vec::new();
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if y == y0 || y == y1 || x == x0 || x == x1 {
+                out.push((x, y));
+            }
+        }
+    }
+    out
+}
+
+/// True for a printable letter one cell wide: what [`Board::write`] accepts
+pub fn is_glyph(c: char) -> bool {
+    !c.is_control() && c != ' ' && c.width() == Some(1)
 }
 
 /// Expands each center into a `size`x`size` square brush, clipped to the board and without duplicates
@@ -194,6 +308,19 @@ mod tests {
         }
         assert_eq!(line((5, 2), (0, 0)).len(), l.len());
         assert_eq!(line((3, 3), (3, 3)), vec![(3, 3)]);
+    }
+
+    #[test]
+    fn write_puts_letters_and_paint_removes_them() {
+        let mut b = Board::new();
+        assert_eq!(b.write(3, 77, 1, "ciao"), 3);
+        assert_eq!(
+            b.cell(77, 1),
+            Cell {
+                color: 3,
+                glyph: Some('c')
+            }
+        );
     }
 
     #[test]
