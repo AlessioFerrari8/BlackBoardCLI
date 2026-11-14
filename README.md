@@ -2,26 +2,45 @@
 
 ![demo](demo/blackboard.gif)
 
-A shared blackboard and a chat for two people, right into your terminal. You can draw together in real time, either over the same local network, or through a relay, using a room code.
+A shared blackboard and a chat for two people, right into your terminal. You can draw and write together in real time, either over the same local network, or from anywhere through a relay, with a room code.
 
 ## Features
 - Shared 80 x 24 cell board with 8 colors and an eraser
+- Tools: free hand, lines, rectangles and text, with mouse or keyboard and an adjustable brush
+- Undo (`u` or `Crtl+z`>) that takes back only your own strokes, never what your friend drew on top 
+- Save the board (`S`) and open it again later with `host --open`, plus a plain-text copy to paste anywhere
 - Draw with the mouse or keyboard, with an adjustable brush size
 - Built-in chat and live cursor sharing
-- Connection directly over a local network or through a relay
-- Relay server included, with temporary room codes
+- Direct connection on a local network, or a WebSocket relay with temporary room codes
+- A public relay on `wss://`, so it works through school and office firewalls :)
 
 ## How to use it
 
-### Direct connection over the same network
+### From two different networks (public relay)
 
-On the computer hosting the board, becoming the server, run
+On the computer hosting the board, run:
 
 ```sh
-blackboard host
+blackboard host --relay
 ```
 
-The program will display a command to share with the other person. On their computer, use the ip address shown by the host:
+The host gets a room code like `K7P2QX`. The other person can join from anywhere with:
+
+```sh
+blackboard join K7P2QX
+```
+
+Rooms code are case-insensitive, and a room waits 15 minutes for its guest.
+
+### On the same network
+
+On the computer hosting the board, run:
+
+```sh
+blackboard host 
+```
+
+The program will display a command to share with the other person, including its local ip address. On their computer, use the ip address shown by the host:
 
 ```sh
 blackboard join 192.168.1.19
@@ -29,28 +48,25 @@ blackboard join 192.168.1.19
 
 Replace `192.168.1.19` with the address displayed by the host. The default port is `7878`; if you choose a different port, include it in the ip address, for example `192.168.1.19:9000`. The host's firewall must allow TCP connections on that port
 
-### Connect through a relay
+### Your own relay
 
-To connect people on different networks, start a relay that both participants can reach. You can run it on a dedicated server:
+To host your own relay server, run:
 
 ```sh
 blackboard relay
 ```
 
-By default, the relay listens on port `7879`. If it runs on a remote machine, configure the network and firewall so both participants can connect to it.
-
-The host opens a room by specifying the relay address:
+By default, it listens on port `ws://0.0.0.0:7879`. Both sides can then pass its address with `--relay`
 
 ```sh
-blackboard host --relay relay.example.org:7879
+blackboard host --relay 10.0.0.5
+blackboard join K7P2QX --relay 10.0.0.5
 ```
 
-Share the room code displayed by the program. The other person can join with:
+An address without a scheme defaults to `ws://` on port `7879`. Instead of passing `--relay`, you can set the `BLACKBOARD_RELAY` environment variable to teh relay address.
 
-```sh
-blackboard join CODE --relay relay.example.org:7879
-```
-Room codes are case-insensitive. Instead of passing `--relay` you can set the `BLACKBOARD_RELAY` environment variable to the relay address.
+To put the relay online with TLS, run it behind a reverse proxy that speaks HTTPS (Caddy, nginx f.e.) and pass that server's address with `--trust-proxy`, so the per-address connection limit counts real clients. A Docker image and a compose file are available in `Dockerfile` and `deploy/`
+
 
 ## Tech Stack
 - Rust 2024
@@ -60,13 +76,15 @@ Room codes are case-insensitive. Instead of passing `--relay` you can set the `B
 ## Requirements
 - Rust 1.88+
 - A terminal that support TUI features and mouse events
-- For relay mode, a small server
+- For hosting your own relay, a small server or Docker
 
 ## Install
-Download `blackboard-v0.1.0-linux-x86_64` from the Releases page, then:
+
+Download `blackboard-v0.2.0-linux-x86_64` from the [Releases](https://github.com/AlessioFerrari8/BlackBoardCLI/releases) page, then:
+
 ```sh
-chmod +x blackboard-v0.1.0-linux-x86_64
-./blackboard-v0.1.0-linux-x86_64 host
+chmod +x blackboard-v0.2.0-linux-x86_64
+./blackboard-v0.2.0-linux-x86_64 host --relay
 ```
 
 ## Build
@@ -74,7 +92,7 @@ chmod +x blackboard-v0.1.0-linux-x86_64
 Clone the repo and build the project
 
 ```sh
-git clone https://github.com/AlessioFerrari8/BlackBoardCLI.git
+git clone [https://github.com/AlessioFerrari8/BlackBoardCLI.git](https://github.com/AlessioFerrari8/BlackBoardCLI.git)
 cd BlackBoardCLI
 cargo build --release
 ```
@@ -85,16 +103,27 @@ The compiled program is available at `target/release/blackboard`. During develop
 ## Commands
 
 ```text
-blackboard host [--port PORT] [--bind IP] [--name NAME] [--relay HOST:PORT]
-blackboard join ADDRESS [--name NAME] [--relay HOST:PORT]
-blackboard relay [--port PORT] [--bind IP] [--max-rooms NUMBER] [--max-per-ip NUMBER]
+blackboard host  [--relay [URL]] [--open FILE] [--port PORT]
+                 [--bind IP] [--name NAME]
+blackboard join  CODE|ADDRESS [--relay URL] [--name NAME]
+blackboard relay [--port PORT] [--bind IP] [--max-rooms N]
+                 [--max-per-ip N] [--trust-proxy IP]...
 ```
 
-- `host`: opens a board and waits for someone to join. In direct mode, it listens on port `7878`.
-- `join`: connects to the host's address or, with `--relay`, uses the provided value as a room code.
-- `relay`: starts the relay server, which listens on port `7879` by default.
+- `host`: opens a board and waits for someone to join. In direct
+  mode, it listens on port `7878`.
+- `join`: connects to the host's address or, with a room code,
+  joins through a relay.
+- `relay`: starts a relay server, which listens on port `7879` by
+  default.
+- `--relay`: uses the default public relay (when passed to `host`
+  without a URL) or connects to a custom relay URL.
+- `--open`: loads a previously saved `.board` file when hosting.
 - `--bind`: the IP address to listen on; defaults to `0.0.0.0`.
-- `--name`: the name shown in chat. If omitted, the system username is used.
+- `--name`: the name shown in chat. If omitted, the system username
+  is used.
+- `--trust-proxy`: trusts `X-Forwarded-For` headers from the
+  specified reverse proxy IP(s).
 
 You can view all available options in the terminal:
 
@@ -111,16 +140,29 @@ When the board is focused:
 
 | Key or action | Effect |
 | --- | --- |
-| Drag with the left mouse button | Draw with the selected color |
+| Drag with the left mouse button | Draw with the current tool |
 | Drag with the right mouse button | Erase |
-| `1`–`8` | Select a color |
+| `P`, `L`, `R`, `T` | Select Pen, Line, Rectangle, or Text tool |
+| `1`–`8` | Select a chalk color |
 | `0` or `e` | Select the eraser |
 | `+` / `-` | Increase or decrease brush size |
-| `C` | Clear the board |
 | Arrow keys or `h` `j` `k` `l` | Move the cursor |
-| Space | Draw under the cursor |
+| `Space` | Draw at the cursor (lines/rectangles: once per end) |
+| `Esc` | Drop the shape in progress |
+| `u` or `Ctrl+Z` | Undo your last stroke |
+| `S` | Save the board |
+| `C` | Clear the board |
 | `Tab` or `t` | Focus the chat |
 | `q` | Quit |
+
+While writing text:
+
+| Key | Effect |
+| --- | --- |
+| Any character | Write on the board |
+| `Enter` | Start a new line under the first letter |
+| `Backspace` | Delete a character |
+| `Esc` | Stop writing text |
 
 When the chat is focused:
 
@@ -131,14 +173,21 @@ When the chat is focused:
 | `Backspace` | Delete a character |
 | `Ctrl+C` or `Ctrl+Q` | Quit |
 
+## Saved boards
+
+Pressing `S` writes `board-1.board` and `board-1.txt` in the
+current folder, and never overwrites an older save (the next one
+is `board-2`). Open a saved board again with:
+
+```sh
+blackboard host --open board-1.board
+```
+
 ## Development and testing
 
-Run the test suite with:
+Run the test suite and linter with:
 
 ```sh
 cargo test
+cargo clippy --all-targets
 ```
-
-
-
-
