@@ -1,0 +1,64 @@
+# On a tag like v0.2.0: tests on every system, then one binary per system in a single draft release, published by
+# hand once tried. Ubuntu 22.04 links against an older glibc, so the Linux binary also runs on newer systems (the Nest
+# included). macOS gets two binaries: Apple Silicon (M1 and later) and Intel, both built on the same Apple Silicon runner
+name: release
+ 
+on:
+  push:
+    tags: ["v*"]
+ 
+permissions:
+  contents: read
+ 
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, name: linux-x86_64, ext: "" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: windows-x86_64, ext: .exe }
+          - { os: macos-latest, target: aarch64-apple-darwin, name: macos-aarch64, ext: "" }
+          - { os: macos-latest, target: x86_64-apple-darwin, name: macos-x86_64, ext: "" }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # Git Bash on Windows, so the same script runs everywhere
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # The Intel build cannot run on the Apple Silicon runner; the arm64 job tests the same code
+      - if: matrix.target != 'x86_64-apple-darwin'
+        run: cargo test --locked
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          file="blackboard-${GITHUB_REF_NAME}-${{ matrix.name }}${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/blackboard${{ matrix.ext }}" "$file"
+          # macOS has shasum but no sha256sum; both print "<hash>  <file>"
+          if command -v sha256sum >/dev/null; then sha256sum "$file"; else shasum -a 256 "$file"; fi > "$file.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: blackboard-v*
+          if-no-files-found: error
+ 
+  # Only after every build is green, so a release never ships with a system missing
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --repo "$GITHUB_REPOSITORY" \
+            --title "BlackBoardCLI $GITHUB_REF_NAME" dist/*
