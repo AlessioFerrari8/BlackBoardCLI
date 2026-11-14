@@ -206,6 +206,12 @@ mod tests {
                 w: 2,
                 h: 1,
                 runs: vec![[0, 2]],
+                glyphs: vec![],
+            },
+            Msg::Snapshot {
+                w: 2,
+                h: 1,
+                runs: vec![[1, 2]],
                 glyphs: vec![Glyph { x: 0, y: 0, c: 'a' }],
             },
             Msg::Create,
@@ -239,6 +245,13 @@ mod tests {
         let mut wire = Vec::new();
         write_msg(&mut wire, &Msg::PeerJoined).unwrap();
         assert_eq!(wire, b"{\"t\":\"peer_joined\"}\n");
+    }
+
+    #[test]
+    fn old_snapshots_without_glyphs_still_decode() {
+        let mut r = Cursor::new(b"{\"t\":\"snapshot\",\"w\":1,\"h\":1,\"runs\":[[0,1]]}\n".to_vec());
+        let msg = read_msg(&mut r, &mut Vec::new()).unwrap();
+        assert!(matches!(msg, Some(Msg::Snapshot { glyphs, .. }) if glyphs.is_empty()));
     }
 
     #[test]
