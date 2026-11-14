@@ -4,11 +4,15 @@
 //! Direct mode is one JSON line per message over TCP. The relay is reached over WebSocket (`ws://` or `wss://`), where
 //! a single thread owns the socket and takes outgoing messages from a channel between short reads
 
-
 use std::{
-    io::BufReader, net::{Shutdown, TcpListener, TcpStream}, sync::{
-        Arc, Mutex, mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
-    }, thread, time::Duration,
+    io::BufReader,
+    net::{Shutdown, TcpListener, TcpStream},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
+    },
+    thread,
+    time::Duration,
 };
 
 use crate::{

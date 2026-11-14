@@ -218,12 +218,12 @@ fn relay_counts_clients_behind_a_trusted_proxy_apart() {
         ..RelayConfig::default()
     });
     let open = |client: &str| {
-        let mut req = tungstenite::client::InfoClientRequest::into_client_request(relay.as_str()).unwrap();
+        let mut req = tungstenite::client::IntoClientRequest::into_client_request(relay.as_str()).unwrap();
         req.headers_mut().insert("x-forwarded-for", client.parse().unwrap());
         let (mut ws, _) = tungstenite::connect(req).unwrap();
         ws.send(Message::text(protocol::encode(&Msg::Create))).unwrap();
         let reply = ws.read().unwrap();
-        (ws, protocol::decode(reply.to_text().unwrap()).unwrap());
+        (ws, protocol::decode(reply.to_text().unwrap()).unwrap())
     };
     let (_a, first) = open("198.51.100.1");
     let (_b, second) = open("198.51.100.2");

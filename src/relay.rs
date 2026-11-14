@@ -24,7 +24,7 @@ use std::{
 
 use tungstenite::{
     Message, WebSocket,
-    handshake::client::{Request, Response},
+    handshake::server::{Request, Response},
     protocol::WebSocketConfig,
 };
 
