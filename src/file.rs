@@ -1,5 +1,5 @@
-//! Saving a board to disk and opening it again. A save writes two files side by side: `board-N.board`, which `blackbaord
-//! host --open` reads back, and `board-N.txt`, the same drawing as plain text, to paste anywhere you like
+//! Saving a board to disk and opening it again. A save writes two files side by side: `board-N.board`, which `blackboard
+//! host --open` reads back, and `board-N.txt`, the same drawing as plain text to paste anywhere you like
 
 use std::{
     fs::{self, OpenOptions},
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::board::{Board, EMPTY, Glyph, HEIGHT, WIDTH};
 
-const FORMAT: &str = "blackbaord";
+const FORMAT: &str = "blackboard";
 const FORMAT_VERSION: u32 = 1;
 /// A full board with a letter in every cell is about 60 KiB
 const MAX_FILE: u64 = 1024 * 1024;
@@ -52,10 +52,10 @@ pub fn save(board: &Board, dir: &Path) -> Result<(PathBuf, PathBuf)> {
         fs::write(&text, to_text(board)).with_context(|| format!("cannot write {}", text.display()))?;
         return Ok((path, text));
     }
-    bail!("too many saved board in {}", dir.display())
+    bail!("too many saved boards in {}", dir.display())
 }
 
-/// Opens a file writte by [`save`]
+/// Opens a file written by [`save`]
 pub fn load(path: &Path) -> Result<Board> {
     let size = fs::metadata(path)
         .with_context(|| format!("cannot open {}", path.display()))?
@@ -69,13 +69,8 @@ pub fn load(path: &Path) -> Result<Board> {
     if saved.format != FORMAT || saved.version != FORMAT_VERSION {
         bail!("{} is not a board file this version can open", path.display());
     }
-    let mut board = Board::from_runs(saved.w, saved.h, &saved.runs).with_context(|| {
-        format!(
-            "{} holds a board 
-        of the wrong size or a broken one",
-            path.display()
-        )
-    })?;
+    let mut board = Board::from_runs(saved.w, saved.h, &saved.runs)
+        .with_context(|| format!("{} holds a board of the wrong size or a broken one", path.display()))?;
     board.add_glyphs(&saved.glyphs);
     Ok(board)
 }
@@ -106,4 +101,53 @@ pub fn to_text(board: &Board) -> String {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("blackboard-test-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn save_then_load_gives_the_same_board() {
+        let dir = temp_dir("roundtrip");
+        let mut board = Board::new();
+        board.paint(3, &[[0, 0], [79, 23]]);
+        board.write(5, 10, 2, "ciao");
+        let (first, text) = save(&board, &dir).unwrap();
+        assert!(first.ends_with("board-1.board") && text.ends_with("board-1.txt"));
+        assert_eq!(load(&first).unwrap(), board);
+        let (second, _) = save(&board, &dir).unwrap();
+        assert!(second.ends_with("board-2.board"), "an old save is never overwritten");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn load_refuses_files_that_are_not_boards() {
+        let dir = temp_dir("refuse");
+        let junk = dir.join("junk.board");
+        fs::write(&junk, b"not json").unwrap();
+        assert!(load(&junk).is_err());
+        let small = dir.join("small.board");
+        fs::write(
+            &small, 
+            br#"{"format":"blackboard","version":1,"w":2,"h":1,"runs":[[0, 2]]}"#,
+        )
+        .unwrap();
+        assert!(load(&small).is_err());
+        assert!(load(&dir.join("missing.board")).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn text_export_shows_letters_and_chalk() {
+        let mut board = Board::new();
+        board.write(1, 1, 0, "hi");
+        board.paint(2, &[[0, 1]]);
+        assert_eq!(to_text(&board), " hi\n█\n");
+        assert_eq!(to_text(&Board::new()), "\n");
+    }
+}
