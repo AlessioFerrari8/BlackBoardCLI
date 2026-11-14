@@ -385,7 +385,7 @@ impl App {
 
     fn stop_typing(&mut self) {
         if self.typing.take().is_some() {
-            self.close_stroke()
+            self.close_stroke();
         }
     }
 
@@ -416,7 +416,7 @@ impl App {
             }
             KeyCode::Char(' ') if x < WIDTH => {
                 self.stroke_cells(board::EMPTY, &[[x, y]]);
-                self.move_cursor((x + 1).min(WIDTH - 1), y)
+                self.move_cursor((x + 1).min(WIDTH - 1), y);
             }
             _ => {}
         }
@@ -511,6 +511,7 @@ impl App {
         self.stroke_cells(color, &points);
     }
 
+    /// Paints exactly these cells, without the brush
     fn stroke_cells(&mut self, color: u8, points: &[[u16; 2]]) {
         self.record(points, |b| b.paint(color, points));
         for chunk in points.chunks(MAX_POINTS) {
@@ -728,6 +729,167 @@ mod tests {
     }
 
     #[test]
+    fn mouse_line_is_painted_on_release() {
+        let mut app = connected(Role::Host);
+        app.board_rect = Rect::new(0, 0, WIDTH, HEIGHT);
+        app.on_key(key(KeyCode::Char('L')));
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 3, 3));
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 6, 0));
+        assert!(app.board.is_empty(), "nothing is painted while dragging");
+        assert_eq!(app.preview().unwrap().1.len(), 7);
+        app.on_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 0));
+        for x in 0..=6 {
+            assert_eq!(app.board.get(x, 0), 1);
+        }
+        assert_eq!(app.board.get(3, 3), 0, "only the final line stays");
+        assert!(app.preview().is_none());
+        let draws = app
+            .take_outbox()
+            .into_iter()
+            .filter(|m| matches!(m, Msg::Draw { .. }))
+            .count();
+        assert_eq!(draws, 1);
+    }
+
+    #[test]
+    fn keyboard_rect_takes_two_presses_and_esc_cancels() {
+        let mut app = connected(Role::Host);
+        app.on_key(key(KeyCode::Char('R')));
+        app.cursor = (0, 0);
+        app.on_key(key(KeyCode::Char(' ')));
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.anchor.is_none());
+        app.on_key(key(KeyCode::Char(' ')));
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Right));
+        }
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.board.get(3, 2), 1);
+        assert_eq!(app.board.get(1, 1), 0, "a rectangle is only its outline");
+        let painted = (0..4) 
+            .flat_map(|x| (0..3).map(move |y| (x, y)))
+            .filter(|&(x, y)| app.board.get(x, y) == 1);
+        assert_eq!(painted.count(), 10);
+        // Changing tool drops a shape in progress
+        app.on_key(key(KeyCode::Char(' ')));
+        app.on_key(key(KeyCode::Char('P')));
+        assert!(app.anchor.is_none());
+    }
+
+    #[test]
+    fn typing_writes_letters_and_sends_them() {
+        let mut app = connected(Role::Guest);
+        app.board_rect = Rect::new(0, 0, WIDTH, HEIGHT);
+        app.on_key(key(KeyCode::Char('T')));
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 1));
+        app.take_outbox();
+        for c in "hi qx".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        assert!(!app.quit, "q is a letter while typing");
+        app.on_key(key(KeyCode::Backspace));
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Char('!')));
+        assert_eq!(app.board.cell(2, 1).glyph, Some('h'));
+        assert_eq!(app.board.cell(5, 1).glyph, Some('q'));
+        assert_eq!(app.board.cell(6, 1).color, 0, "backspace erased the x");
+        assert_eq!(
+            app.board.cell(2, 2).glyph,
+            Some('!'),
+            "Enter goes back to the first column"
+        );
+        let texts = app
+            .take_outbox()
+            .into_iter()
+            .filter(|m| matches!(m, Msg::Text { .. }))
+            .count();
+        assert_eq!(texts, 5);
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Char('q')));
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn text_needs_a_chalk() {
+        let mut app = connected(Role::Host);
+        app.on_key(key(KeyCode::Char('T')));
+        app.on_key(key(KeyCode::Char('0')));
+        app.on_key(key(KeyCode::Char(' ')));
+        assert!(app.typing.is_none());
+        assert!(app.chat.last().unwrap().text.contains("pick a chalk"));
+    }
+
+    #[test]
+    fn undo_takes_back_only_your_last_stroke() {
+        let mut app = connected(Role::Host);
+        app.board_rect = Rect::new(0, 0, WIDTH, HEIGHT);
+        app.board.paint(7, &[[2, 0]]);
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 4, 0));
+        app.on_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 4, 0));
+        // The friend draws over one of our cells
+        app.on_net(NetEvent::Msg(Msg::Draw { 
+            color: 3, 
+            points: vec![[4, 0]], 
+        }));
+        app.take_outbox();
+
+        app.on_key(key(KeyCode::Char('u')));
+        assert_eq!(app.board.get(0, 0), 0);
+        assert_eq!(app.board.get(2, 0), 7, "what was under the stroke comes back");
+        assert_eq!(app.board.get(4, 0), 3, "the friend's chalk stays");
+        let out = app.take_outbox();
+        assert!(out.contains(&Msg::Draw { 
+            color: 7, 
+            points: vec![[2, 0]] 
+        }));
+        assert!(out.contains(&Msg::Draw { 
+            color: 0, 
+            points: vec![[0, 0], [1, 0], [3, 0]] 
+        }));
+
+        app.on_key(key(KeyCode::Char('u')));
+        assert!(app.chat.last().unwrap().text.contains("nothing to undo"));
+    }
+
+    #[test]
+    fn undo_restores_letters_and_a_typing_session_is_one_stroke() {
+        let mut app = connected(Role::Host);
+        app.board.write(2, 0, 0, "ab");
+        app.on_key(key(KeyCode::Char('T')));
+        app.cursor = (0, 0);
+        app.on_key(key(KeyCode::Char(' ')));
+        for c in "xyz".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Esc));
+        app.take_outbox();
+        app.on_key(key(KeyCode::Char('u')));
+        assert_eq!(app.board.cell(0, 0).glyph, Some('a'));
+        assert_eq!(app.board.cell(1, 0).glyph, Some('b'));
+        assert_eq!(app.board.cell(2, 0).color, 0);
+        let texts = app
+            .take_outbox()
+            .into_iter()
+            .filter(|m| matches!(m, Msg::Text { .. }))
+            .count();
+        assert_eq!(texts, 2);
+    }
+
+    #[test]
+    fn clearing_forgets_the_history() {
+        let mut app = connected(Role::Host);
+        app.on_key(key(KeyCode::Char(' ')));
+        app.on_net(NetEvent::Msg(Msg::Clear));
+        app.on_key(key(KeyCode::Char('u')));
+        assert!(app.board.is_empty());
+        assert!(app.chat.last().unwrap().text.contains("nothing to undo"));
+    }
+
+    #[test]
     fn ctrl_c_quits_from_anywhere() {
         let mut app = App::new(Role::Host, "me");
         app.focus = Focus::Chat;
@@ -762,6 +924,26 @@ mod tests {
         assert!(
             matches!(&out[1], Msg::Snapshot { runs, .. } if Board::from_runs(WIDTH, HEIGHT, runs) == Some(app.board.clone()))
         );
+    }
+
+    #[test]
+    fn letters_reach_the_guest_live_and_in_the_snapshot() {
+        let mut host = App::new(Role::Host, "ale");
+        host.board.write(2, 0, 0, "hi");
+        host.on_net(NetEvent::Msg(Msg::PeerJoined));
+        let snapshot = host.take_outbox().remove(1);
+
+        let mut guest = connected(Role::Guest);
+        guest.on_net(NetEvent::Msg(snapshot));
+        assert_eq!(guest.board, host.board);
+        guest.on_net(NetEvent::Msg(Msg::Text {
+            color: 4,
+            x: 5,
+            y: 5,
+            text: "\x1b[2Jok".into(),
+        }));
+        assert_eq!(guest.board.cell(5, 5).glyph, Some('['));
+        assert_eq!(guest.board.cell(8, 5).glyph, Some('o'));
     }
 
     #[test]
