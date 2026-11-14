@@ -207,6 +207,29 @@ fn relay_rooms_expire() {
 }
 
 #[test]
+fn relay_counts_clients_behind_a_trusted_proxy_apart() {
+    let relay = start_relay(RelayConfig { 
+        max_conns_per_ip: 1, 
+        trusted_proxies: vec!["127.0.0.1".parse().unwrap()],
+        ..RelayConfig::default()
+    });
+    let open = |client: &str| {
+        let mut req = tungstenite::client::InfoClientRequest::into_client_request(relay.as_str()).unwrap();
+        req.headers_mut().insert("x-forwarded-for", client.parse().unwrap());
+        let (mut ws, _) = tungstenite::connect(req).unwrap();
+        ws.send(Message::text(protocol::encode(&Msg::Create))).unwrap();
+        let reply = ws.read().unwrap();
+        (ws, protocol::decode(reply.to_text().unwrap()).unwrap());
+    };
+    let (_a, first) = open("198.51.100.1");
+    let (_b, second) = open("198.51.100.2");
+    let (_c, third) = open("198.51.100.1");
+    assert!(matches!(first, Msg::Room { .. }));
+    assert!(matches!(second, Msg::Room { .. }));
+    assert!(matches!(third, Msg::Error { .. }));
+}
+
+#[test]
 fn relay_limits_connections_per_address() {
     let relay = start_relay(RelayConfig {
         max_conns_per_ip: 1,

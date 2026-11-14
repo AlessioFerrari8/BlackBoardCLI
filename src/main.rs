@@ -74,6 +74,10 @@ enum Command {
         /// Most connections from a single ip
         #[arg(long, default_value_t = 8)]
         max_per_ip: usize,
+        /// Address of a proxy in front of the relay (like the web server adding TLS): for its connections the cleint address
+        /// comes from X-Forwarded-For. Can be given more than once
+        #[arg(long)]
+        trust_proxy: Vec<IpAddr>
     },
 }
 
@@ -86,12 +90,19 @@ struct Common {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Relay { port, bind, max_rooms, max_per_ip } => {
+        Command::Relay { 
+            port, 
+            bind, 
+            max_rooms, 
+            max_per_ip,
+            trust_proxy 
+        } => {
             let listener =
                 TcpListener::bind((bind, port)).with_context(|| format!("cannot listen on {bind}:{port}"))?;
             let cfg = RelayConfig {
                 max_rooms,
                 max_conns_per_ip: max_per_ip,
+                trusted_proxies: trust_proxy,
                 ..RelayConfig::default()
             };
             relay::serve(listener, cfg)?;

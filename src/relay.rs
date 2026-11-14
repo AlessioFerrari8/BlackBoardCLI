@@ -14,7 +14,7 @@ use std::{
     collections::HashMap, io, net::{IpAddr, TcpListener, TcpStream}, sync::{Arc, Mutex, mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError}}, thread, time::{Duration, Instant},
 };
 
-use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
+use tungstenite::{Message, WebSocket, handshake::client::{Request, Response}, protocol::WebSocketConfig};
 
 use crate::protocol::{self, MAX_LINE, Msg};
 
@@ -34,6 +34,9 @@ pub struct RelayConfig {
     pub handshake_timeout: Duration,
     // Time a room may wait for its guest
     pub room_ttl: Duration,
+    // Proxies in front of the relay (the web server adding TLS). For connections from them the client's address is read
+    // from `X-Forwarded-For`, otherwise every client would count as the proxy against `max_conns_per_ip`
+    pub trusted_proxies: Vec<IpAddr>,
 }
 
 impl Default for RelayConfig {
@@ -43,6 +46,7 @@ impl Default for RelayConfig {
             max_conns_per_ip: 8,
             handshake_timeout: Duration::from_secs(10),
             room_ttl: Duration::from_secs(15 * 60),
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -134,13 +138,26 @@ pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
 }
 
 fn handle(stream: TcpStream, state: &Arc<State>) -> Result<(), String> {
-    let ip = stream.peer_addr().map_err(|e| e.to_string())?.ip();
+    let peer = stream.peer_addr().map_err(|e| e.to_string())?.ip();
     stream.set_nodelay(true).map_err(|e| e.to_string())?;
     stream.
         set_read_timeout(Some(state.cfg.handshake_timeout))
         .map_err(|e| e.to_string())?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT)).map_err(|e| e.to_string())?;
-    let mut ws = tungstenite::accept_with_config(stream, Some(ws_config())).map_err(|e| format!("handshake: {e}"))?;
+    let mut forwarded = None;
+    // The error type is tungstenite's, we never return it
+    #[allow(clippy::result_large_err)]
+    let read_headers = |req: &Request, resp: Response| {
+        forwarded = req
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        Ok(resp)
+    };
+    let mut ws = tungstenite::accept_hdr_with_config(stream, read_headers, Some(ws_config()))
+        .map_err(|e| format!("handshake: {e}"))?;
+    let ip = client_ip(peer, forwarded.as_deref(), &state.cfg.trusted_proxies);
 
     let Some(slot) = IpSlot::take(state, ip) else {
         refuse(&mut ws, "too many connections from your address");
@@ -304,6 +321,18 @@ fn session(ws: &mut Ws, inbox: &Receiver<Ctl>, mut peer: Option<SyncSender<Ctl>>
     }
 }
 
+/// The address a connection counts against. Behind a trusted proxy it is the last hop the proxy added to `X-Forwarded-For`:
+/// the earlier ones come from the client and could be anything
+pub fn client_ip(peer: IpAddr, forwarded: Option<&str>, trusted: &[IpAddr]) -> IpAddr {
+    if !trusted.contains(&peer) {
+        return peer;
+    }
+    forwarded   
+        .and_then(|f| f.rsplit(',').next())
+        .and_then(|ip| ip.trim().parse().ok())
+        .unwrap_or(peer)
+}
+
 /// Reads the first message, waiting up to the handshake timeout set on the socket
 fn read_one(ws: &mut Ws) -> Result<Msg, String> {
     loop {
@@ -362,5 +391,16 @@ mod tests {
         assert!(!is_room_code("192.168.1.2"));
         assert!(!is_room_code("ABC12"), "1 is not in the alphabet");
         assert!(!is_room_code("host:7878"));
+    }
+
+    #[test]
+    fn forwarded_address_is_trusted_only_from_a_proxy() {
+        let proxy: IpAddr = "10.60.1.2".parse().unwrap();
+        let other: IpAddr = "203.0.113.9".parse().unwrap();
+        let header = Some("1.1.1.1, 192.51.100.7");
+        assert_eq!(client_ip(proxy, header, &[proxy]), "192.51.100.7".parse::<IpAddr>().unwrap());
+        assert_eq!(client_ip(other, header, &[proxy]), other, "anyone can write the header");
+        assert_eq!(client_ip(proxy, None, &[proxy]), proxy);
+        assert_eq!(client_ip(proxy, Some("garbage"), &[proxy]), proxy);
     }
 }
