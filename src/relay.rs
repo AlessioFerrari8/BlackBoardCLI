@@ -35,6 +35,8 @@ pub const CODE_LEN: usize = 6;
 /// How long a read waits before the thread looks at its channel. It is the most delay the relay adds to a message
 pub const POLL: Duration = Duration::from_millis(20);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a refused client gets to read the reason before its socket is dropped
+const LINGER: Duration = Duration::from_secs(1);
 /// Messages waiting for the other side. A client that fills it is sending far faster than anyone draws
 const QUEUE: usize = 1024;
 
@@ -142,7 +144,7 @@ pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
         let state = Arc::clone(&state);
         thread::spawn(move || {
             if let Err(e) = handle(stream, &state) {
-                eprintln!("{peer}: {e}")
+                eprintln!("{peer}: {e}");
             }
         });
     }
@@ -370,10 +372,22 @@ fn send(ws: &mut Ws, msg: &Msg) -> tungstenite::Result<()> {
     ws.send(Message::text(protocol::encode(msg)))
 }
 
+/// Sends the reason and closes. Before dropping the socket it reads whatever the client already sent: closing a socket with
+/// unread data sends a reset instead of a normal close, and Windows then throws away what the client has not read yet,
+/// the reason included
 fn refuse(ws: &mut Ws, reason: &str) {
     let _ = send(ws, &Msg::Error { reason: reason.into() });
     let _ = ws.close(None);
-    let _ = ws.flush();
+    let _ = ws.get_ref().set_read_timeout(Some(POLL));
+    let until = Instant::now() + LINGER;
+    while Instant::now() < until {
+        match ws.read() {
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e)) if would_block(&e) => {}
+            // The client answered the close, or went away
+            Err(_) => break,
+        }
+    }
 }
 
 /// A read that ran into the socket timeout. Unix says `WouldBlock`, Windows `TimedOut`
@@ -418,10 +432,10 @@ mod tests {
     fn forwarded_address_is_trusted_only_from_a_proxy() {
         let proxy: IpAddr = "10.60.1.2".parse().unwrap();
         let other: IpAddr = "203.0.113.9".parse().unwrap();
-        let header = Some("1.1.1.1, 192.51.100.7");
+        let header = Some("1.1.1.1, 198.51.100.7");
         assert_eq!(
             client_ip(proxy, header, &[proxy]),
-            "192.51.100.7".parse::<IpAddr>().unwrap()
+            "198.51.100.7".parse::<IpAddr>().unwrap()
         );
         assert_eq!(client_ip(other, header, &[proxy]), other, "anyone can write the header");
         assert_eq!(client_ip(proxy, None, &[proxy]), proxy);

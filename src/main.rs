@@ -77,7 +77,7 @@ enum Command {
         /// Most connections from a single ip
         #[arg(long, default_value_t = 8)]
         max_per_ip: usize,
-        /// Address of a proxy in front of the relay (like the web server adding TLS): for its connections the cleint address
+        /// Address of a proxy in front of the relay (like the web server adding TLS): for its connections the client address
         /// comes from X-Forwarded-For. Can be given more than once
         #[arg(long)]
         trust_proxy: Vec<IpAddr>,

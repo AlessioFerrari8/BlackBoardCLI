@@ -769,7 +769,7 @@ mod tests {
         app.on_key(key(KeyCode::Char(' ')));
         assert_eq!(app.board.get(3, 2), 1);
         assert_eq!(app.board.get(1, 1), 0, "a rectangle is only its outline");
-        let painted = (0..4) 
+        let painted = (0..4)
             .flat_map(|x| (0..3).map(move |y| (x, y)))
             .filter(|&(x, y)| app.board.get(x, y) == 1);
         assert_eq!(painted.count(), 10);
@@ -831,9 +831,9 @@ mod tests {
         app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 4, 0));
         app.on_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 4, 0));
         // The friend draws over one of our cells
-        app.on_net(NetEvent::Msg(Msg::Draw { 
-            color: 3, 
-            points: vec![[4, 0]], 
+        app.on_net(NetEvent::Msg(Msg::Draw {
+            color: 3,
+            points: vec![[4, 0]],
         }));
         app.take_outbox();
 
@@ -842,13 +842,13 @@ mod tests {
         assert_eq!(app.board.get(2, 0), 7, "what was under the stroke comes back");
         assert_eq!(app.board.get(4, 0), 3, "the friend's chalk stays");
         let out = app.take_outbox();
-        assert!(out.contains(&Msg::Draw { 
-            color: 7, 
-            points: vec![[2, 0]] 
+        assert!(out.contains(&Msg::Draw {
+            color: 7,
+            points: vec![[2, 0]]
         }));
-        assert!(out.contains(&Msg::Draw { 
-            color: 0, 
-            points: vec![[0, 0], [1, 0], [3, 0]] 
+        assert!(out.contains(&Msg::Draw {
+            color: 0,
+            points: vec![[0, 0], [1, 0], [3, 0]]
         }));
 
         app.on_key(key(KeyCode::Char('u')));

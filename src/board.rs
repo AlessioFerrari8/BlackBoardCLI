@@ -328,7 +328,7 @@ mod tests {
         b.paint(5, &[[77, 1]]);
         assert_eq!(b.cell(77, 1), Cell { color: 5, glyph: None });
         b.clear();
-        assert!(b.glyph_list().is_empty());     
+        assert!(b.glyph_list().is_empty());
     }
 
     #[test]
@@ -347,8 +347,8 @@ mod tests {
     fn set_restores_a_cell() {
         let mut b = Board::new();
         b.set(
-            1, 
-            1, 
+            1,
+            1,
             Cell {
                 color: 2,
                 glyph: Some('k'),
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(rect((0, 0), (3, 2)).len(), 10);
         assert_eq!(rect((3, 2), (0, 0)), rect((0, 0), (3, 2)));
     }
-    
+
     #[test]
     fn brush_sizes_and_clipping() {
         assert_eq!(brush(&[(5, 5)], 1), vec![[5, 5]]);

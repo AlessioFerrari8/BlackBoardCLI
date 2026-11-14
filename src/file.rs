@@ -133,7 +133,7 @@ mod tests {
         assert!(load(&junk).is_err());
         let small = dir.join("small.board");
         fs::write(
-            &small, 
+            &small,
             br#"{"format":"blackboard","version":1,"w":2,"h":1,"runs":[[0, 2]]}"#,
         )
         .unwrap();
