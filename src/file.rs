@@ -49,6 +49,19 @@ pub fn save(board: &Board, dir: &Path) -> Result<(PathBuf, PathBuf)> {
         };
         file.write_all(&json)?;
         let text = path.with_extension("txt");
+        // Same rule for the text copy: a `board-N.txt` that is already there is somebody's file, not ours to replace
+        let written = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&text)
+            .and_then(|mut f| f.write_all(to_text(board).as_bytes()));
+        if let Err(e) = written {
+            let _ = fs::remove_file(&path);
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                continue;
+            }
+            return Err(e).with_context(|| format!("cannot write {}", text.display()));
+        }
         fs::write(&text, to_text(board)).with_context(|| format!("cannot write {}", text.display()))?;
         return Ok((path, text));
     }
