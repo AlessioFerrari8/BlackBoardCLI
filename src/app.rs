@@ -251,6 +251,8 @@ impl App {
                 let text: String = text.chars().take(WIDTH as usize).collect();
                 self.board.write(color, x, y, &text);
             }
+            // The board is the host's: only a guest takes a whole board from the other side
+            Msg::Snapshot { .. } if self.role == Role::Host => {}
             Msg::Snapshot { w, h, runs, glyphs } => match Board::from_runs(w, h, &runs) {
                 Some(mut b) => {
                     b.add_glyphs(&glyphs);
