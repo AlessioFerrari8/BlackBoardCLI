@@ -1,5 +1,5 @@
 # The relay as a small image. Build it on your machine, not on the server:
-#   docker build - t blackboard-relay
+#   docker build -t blackboard-relay .
 FROM rust:1.91-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./

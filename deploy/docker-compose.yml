@@ -9,5 +9,5 @@ services:
     ports:
       - "${RELAY_PORT:-7879}:7879"
     read_only: true
-    can_drop: [ALL]
+    cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
