@@ -16,6 +16,7 @@ use std::{
     net::{IpAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread,
@@ -51,6 +52,9 @@ pub struct RelayConfig {
     // Proxies in front of the relay (the web server adding TLS). For connections from them the client's address is read
     // from `X-Forwarded-For`, otherwise every client would count as the proxy against `max_conns_per_ip`
     pub trusted_proxies: Vec<IpAddr>,
+    // Most connections open at once, handshakes included. Each one is a thread, so without it anyone can make us spawn
+    // threads until the machine gives up
+    pub max_conns: usize,
 }
 
 impl Default for RelayConfig {
@@ -61,6 +65,7 @@ impl Default for RelayConfig {
             handshake_timeout: Duration::from_secs(10),
             room_ttl: Duration::from_secs(15 * 60),
             trusted_proxies: Vec::new(),
+            max_conns: 512,
         }
     }
 }
@@ -130,6 +135,8 @@ pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
         per_ip: Mutex::new(HashMap::new()),
     });
 
+    let live = Arc::new(AtomicUsize::new(0));
+
     eprintln!("relay listening on ws://{}", listener.local_addr()?);
 
     for conn in listener.incoming() {
@@ -141,11 +148,19 @@ pub fn serve(listener: TcpListener, cfg: RelayConfig) -> io::Result<()> {
             }
         };
         let Ok(peer) = stream.peer_addr() else { continue };
+        // Checked before the handshake: a client that never finishes it still costs a thread
+        if live.load(Ordering::Relaxed) >= state.cfg.max_conns {
+            eprintln!("ferused {peer}: the relay is full");
+            continue;
+        }
+        live.fetch_add(1, Ordering::Relaxed);
+        let (state, live) = (Arc::clone(&state), Arc::clone(&live));
         let state = Arc::clone(&state);
         thread::spawn(move || {
             if let Err(e) = handle(stream, &state) {
                 eprintln!("{peer}: {e}");
             }
+            live.fetch_sub(1, Ordering::Relaxed);
         });
     }
     Ok(())
