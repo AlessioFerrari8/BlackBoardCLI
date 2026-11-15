@@ -47,6 +47,8 @@ pub enum Tool {
     Rect,
     // Click and type letters on the board
     Text,
+    // Click inside a closed shape to color all of it
+    Fill,
 }
 
 impl Tool {
@@ -56,6 +58,7 @@ impl Tool {
             Tool::Line => "line",
             Tool::Rect => "rect",
             Tool::Text => "text",
+            Tool::Fill => "fill",
         }
     }
 }
@@ -314,6 +317,7 @@ impl App {
             KeyCode::Char('L') => self.set_tool(Tool::Line),
             KeyCode::Char('R') => self.set_tool(Tool::Rect),
             KeyCode::Char('T') => self.set_tool(Tool::Text),
+            KeyCode::Char('F') => self.set_tool(Tool::Fill),
             KeyCode::Char(d @ '0'..='9') => {
                 let n = d as u8 - b'0';
                 if n <= PALETTE_LEN {
@@ -347,6 +351,7 @@ impl App {
         match (self.tool, self.anchor.take()) {
             (Tool::Pen, _) => self.stroke(color, &[self.cursor]),
             (Tool::Text, _) => self.start_typing(self.cursor),
+            (Tool::Fill, _) => self.fill(self.cursor, color),
             (_, Some((start, color))) => self.finish_shape(start, color),
             (_, None) => self.anchor = Some((self.cursor, color)),
         }
@@ -368,6 +373,16 @@ impl App {
     fn finish_shape(&mut self, start: (u16, u16), color: u8) {
         let cells = self.shape(start, self.cursor);
         self.stroke(color, &cells);
+    }
+
+    /// Colors the whole area arount `at` in one stroke, so one undo takes it back
+    fn fill(&mut self, at: (u16, u16), color: u8) {
+        if self.board.get(at.0, at.1) == color && self.board.cell(at.0, at.1).glyph.is_none() {
+            return;
+        }
+        let cells = self.board.fill(at.0, at.1);
+        self.close_stroke();
+        self.stroke_cells(color, &cells);
     }
 
     fn start_typing(&mut self, at: (u16, u16)) {
@@ -440,6 +455,12 @@ impl App {
                     MouseButton::Middle => return,
                 };
                 self.focus = Focus::Board;
+                if self.tool == Tool::Fill {
+                    self.cursor = p;
+                    self.fill(p, color);
+                    self.send_cursor(p);
+                    return;
+                }
                 if self.tool == Tool::Text {
                     if button == MouseButton::Left {
                         self.start_typing(p);
@@ -1030,5 +1051,49 @@ mod tests {
         let code = app.room.unwrap();
         assert!(code.starts_with("AB[2J") && code.len() <= MAX_ROOM_CODE);
         assert!(!app.chat.last().unwrap().text.contains('\u{202E}'));
+    }
+
+    #[test]
+    fn fill_colors_inside_a_rectangle_and_stops_at_its_border() {
+        let mut app = connected(Role::Host);
+        app.on_key(key(KeyCode::Char('R')));
+        app.on_key(key(KeyCode::Char('1')));
+        app.cursor = (2, 2);
+        app.on_key(key(KeyCode::Char(' ')));
+        app.cursor = (10, 6);
+        app.on_key(key(KeyCode::Char(' ')));
+        app.take_outbox();
+
+        app.on_key(key(KeyCode::Char('F')));
+        app.on_key(key(KeyCode::Char('3')));
+        app.cursor = (5, 4);
+        app.on_key(key(KeyCode::Char(' ')));
+
+        assert_eq!(app.board.get(5, 4), 3);
+        assert_eq!(app.board.get(3, 3), 3, "the whole inside");
+        assert_eq!(app.board.get(2, 2), 1, "the border stays");
+        assert_eq!(app.board.get(0, 0), 0, "outside stays empty");
+        let sent: usize = app
+            .take_outbox()
+            .iter()
+            .map(|m| match m {
+                Msg::Draw { color: 3, points } => points.len(),
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(sent, 7 * 3, "the friend gets the same cells");
+
+        app.on_key(key(KeyCode::Char('u')));
+        assert_eq!(app.board.get(5, 4), 0, "one undo takes the fill back");
+        assert_eq!(app.board.get(2, 2), 1);
+    }
+
+    #[test]
+    fn fill_with_the_same_color_does_nothing() {
+        let mut app = connected(Role::Host);
+        app.on_key(key(KeyCode::Char('F')));
+        app.on_key(key(KeyCode::Char('0')));
+        app.on_key(key(KeyCode::Char(' ')));
+        assert!(app.take_outbox().is_empty());
     }
 }

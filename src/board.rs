@@ -50,6 +50,38 @@ impl Board {
         x < WIDTH && y < HEIGHT
     }
 
+    /// Cells connected to (x, y) that have its same color, for the bucket tool. Letters count as walls
+    pub fn fill(&self, x: u16, y: u16) -> Vec<[u16; 2]> {
+        if !Self::in_bounds(x, y) {
+            return Vec::new();
+        }
+        let target = self.cell(x, y);
+        let mut seen = vec![false; WIDTH as usize * HEIGHT as usize];
+        let mut stack = vec![(x, y)];
+        let mut out = Vec::new();
+        while let Some((cx, cy)) = stack.pop() {
+            let i = Self::index(cx, cy);
+            if seen[i] || self.cell(cx, cy) != target {
+                continue;
+            }
+            seen[i] = true;
+            out.push([cx, cy]);
+            if cx > 0 {
+                stack.push((cx - 1, cy));
+            }
+            if cx + 1 < WIDTH {
+                stack.push((cx + 1, cy));
+            }
+            if cy > 0 {
+                stack.push((cx, cy - 1));
+            }
+            if cy + 1 < HEIGHT {
+                stack.push((cx, cy + 1));
+            }
+        }
+        out
+    }
+
     pub fn get(&self, x: u16, y: u16) -> u8 {
         if Self::in_bounds(x, y) {
             self.cells[Self::index(x, y)]

@@ -6,7 +6,7 @@ A shared blackboard and a chat for two people, right into your terminal, on Linu
 
 ## Features
 - Shared 80 x 24 cell board with 8 colors and an eraser
-- Tools: free hand, lines, rectangles and text, with mouse or keyboard and an adjustable brush
+- Tools: free hand, lines, rectangles and text and fill, with mouse or keyboard and an adjustable brush
 - Undo (`u` or `Crtl+z`) that takes back only your own strokes, never what your friend drew on top 
 - Save the board (`S`) and open it again later with `host --open`, plus a plain-text copy to paste anywhere
 - Built-in chat and live cursor sharing
@@ -186,7 +186,7 @@ When the board is focused:
 | --- | --- |
 | Drag with the left mouse button | Draw with the current tool |
 | Drag with the right mouse button | Erase |
-| `P`, `L`, `R`, `T` | Select Pen, Line, Rectangle, or Text tool |
+| `P`, `L`, `R`, `T`, `F` | Select Pen, Line, Rectangle, Text or Fill tool |
 | `1`–`8` | Select a chalk color |
 | `0` or `e` | Select the eraser |
 | `+` / `-` | Increase or decrease brush size |
