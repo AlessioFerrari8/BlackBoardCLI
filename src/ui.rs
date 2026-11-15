@@ -188,7 +188,14 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(focus_style(app.focus == Focus::Chat))
-        .title(format!(" chat · {peer}"));
+        .title(if app.unread > 0 {
+            Line::from(vec![
+                Span::raw(format!(" chat · {peer} ")),
+                Span::styled(format!("· {} new", app.unread), Style::new().fg(Color::Yellow)),
+            ])
+        } else {
+            Line::from(format!(" chat · {peer} "))
+        });
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 || inner.width == 0 {

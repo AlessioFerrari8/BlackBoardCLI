@@ -102,6 +102,8 @@ pub struct App {
     // Keyboard cursor on the board
     pub cursor: (u16, u16),
     pub peer_cursor: Option<(u16, u16)>,
+    // Chat messages from the friend that arrived while you were on the board
+    pub unread: usize,
     // Screen area the board is drawn in; set by the UI on every frame and used to turn mouse positions into board cells
     pub board_rect: Rect,
     pub quit: bool,
@@ -140,6 +142,7 @@ impl App {
             typing: None,
             cursor: (WIDTH / 2, HEIGHT / 2),
             peer_cursor: None,
+            unread: 0,
             board_rect: Rect::default(),
             quit: false,
             save_requested: false,
@@ -237,6 +240,9 @@ impl App {
                 let text = sanitize(&text, MAX_CHAT);
                 if !text.is_empty() {
                     self.push_chat(Who::Peer, text);
+                    if self.focus != Focus::Chat {
+                        self.unread += 1;
+                    }
                 }
             }
             Msg::Cursor { x, y } => self.peer_cursor = Board::in_bounds(x, y).then_some((x, y)),
@@ -271,11 +277,15 @@ impl App {
                 Focus::Chat => Focus::Board,
             };
             return;
+        } else {
+            match self.focus {
+                Focus::Chat => self.chat_key(key),
+                Focus::Board if self.typing.is_some() => self.text_key(key),
+                Focus::Board => self.board_key(key),
+            }
         }
-        match self.focus {
-            Focus::Chat => self.chat_key(key),
-            Focus::Board if self.typing.is_some() => self.text_key(key),
-            Focus::Board => self.board_key(key),
+        if self.focus == Focus::Chat {
+            self.unread = 0;
         }
     }
 
@@ -1095,5 +1105,17 @@ mod tests {
         app.on_key(key(KeyCode::Char('0')));
         app.on_key(key(KeyCode::Char(' ')));
         assert!(app.take_outbox().is_empty());
+    }
+
+    #[test]
+    fn chat_counts_unread_messages_until_you_open_it() {
+        let mut app = connected(Role::Host);
+        app.on_net(NetEvent::Msg(Msg::Chat { text: "ciao".into() }));
+        app.on_net(NetEvent::Msg(Msg::Chat { text: "ci sei?".into() }));
+        assert_eq!(app.unread, 2);
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.unread, 0);
+        app.on_net(NetEvent::Msg(Msg::Chat { text: "ok".into() }));
+        assert_eq!(app.unread, 0, "you are already reading");
     }
 }
