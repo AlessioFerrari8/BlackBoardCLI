@@ -11,11 +11,12 @@ A shared blackboard and a chat for two people, right into your terminal, on Linu
 - Save the board (`S`) and open it again later with `host --open`, plus a plain-text copy to paste anywhere
 - Built-in chat and live cursor sharing
 - Direct connection on a local network, or a WebSocket relay with temporary room codes
-- A public relay on `wss://`, so it works through school and office firewalls :)
+- A relay you can run yourself and reach over `wss://`, so it works through school and office firewalls (the public one is not online yet) :)
 
 ## How to use it
 
 ### From two different networks (public relay)
+> The public relay is not online yet. Until it is, run one yourself: see "Your own relay" below.
 
 On the computer hosting the board, run:
 
@@ -226,6 +227,12 @@ is `board-2`). Open a saved board again with:
 ```sh
 blackboard host --open board-1.board
 ```
+
+## Security
+- Direct mode (`host` / `join <ip>`) is plain TCP: no encryption and no password. Whoever reaches the port first is your guest, so use it on a network you can trust.
+- Through a relay the connection is encrypted up to the relay (`wss://`), not e2e: whoever runs the relay can read the board and the chat.
+- A room code is the only key to a room and it works once: as soon as someone joins, the code is gone.
+- Text from the other side is cleaned before it is shown, so a peer cannot send escape sequences to your terminal.
 
 ## Development and testing
 
