@@ -276,7 +276,6 @@ impl App {
                 Focus::Board => Focus::Chat,
                 Focus::Chat => Focus::Board,
             };
-            return;
         } else {
             match self.focus {
                 Focus::Chat => self.chat_key(key),
